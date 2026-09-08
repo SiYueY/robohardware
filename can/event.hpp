@@ -1,6 +1,6 @@
 #pragma once
 
-#include "can/timestamp.hpp"
+#include "can/frame.hpp"
 
 #include <cstdint>
 
@@ -29,7 +29,11 @@ enum class EventType : std::uint8_t {
 struct Event {
     EventType type{EventType::Unknown};
     Timestamp timestamp{};
+    // SocketCAN error-class bits without CAN_ERR_FLAG. EventType is the stable
+    // semantic classification; detail preserves the source diagnostic facts.
     std::uint32_t detail{0};
+    // Reserved for a native diagnostic code when the kernel defines one.
+    // SocketCAN V1 error-frame decoding currently leaves it at zero.
     int native_code{0};
 };
 

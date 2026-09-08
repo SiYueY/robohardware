@@ -3,7 +3,6 @@
 #include "can/error.hpp"
 #include "can/event.hpp"
 #include "can/frame.hpp"
-#include "can/timestamp.hpp"
 
 namespace can {
 

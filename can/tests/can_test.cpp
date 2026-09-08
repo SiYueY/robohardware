@@ -1,71 +1,98 @@
-#include "can/native.hpp"
+#include "../event.cpp"
+#include "../socket.cpp"
 
 #include <gtest/gtest.h>
 
 #include <linux/can/error.h>
 
+#include <type_traits>
+
 namespace {
+
+static_assert(!std::is_default_constructible_v<can::Socket>);
+static_assert(!std::is_copy_constructible_v<can::Socket>);
+static_assert(std::is_nothrow_move_constructible_v<can::Socket>);
 
 TEST(Frame, ValidatesFormatSpecificIdsAndClassicLength) {
     can::Frame standard{0x7FF, 8, can::FrameFormat::Standard};
-    EXPECT_TRUE(can::native::validate(standard));
+    EXPECT_TRUE(validate(standard));
     standard.id = 0x800;
-    EXPECT_EQ(can::native::validate(standard).error().code, can::ErrorCode::InvalidFrame);
+    EXPECT_EQ(validate(standard).error().code, can::ErrorCode::InvalidFrame);
 
     can::Frame extended{0x1FFFFFFF, 0, can::FrameFormat::Extended};
-    EXPECT_TRUE(can::native::validate(extended));
+    EXPECT_TRUE(validate(extended));
     extended.id = 0x20000000;
-    EXPECT_EQ(can::native::validate(extended).error().code, can::ErrorCode::InvalidFrame);
+    EXPECT_EQ(validate(extended).error().code, can::ErrorCode::InvalidFrame);
 
     can::Frame oversized{0, 9};
-    EXPECT_EQ(can::native::validate(oversized).error().code, can::ErrorCode::InvalidFrame);
+    EXPECT_EQ(validate(oversized).error().code, can::ErrorCode::InvalidFrame);
 }
 
 TEST(Frame, ConvertsDataAndRemoteFramesWithoutLeakingFlags) {
+    can::Frame standard{0x7FF, 0, can::FrameFormat::Standard, can::FrameType::Data};
+    const ::can_frame standard_native = to_native(standard);
+    EXPECT_EQ(standard_native.can_id, standard.id);
+
     can::Frame input{0x1ABCDE, 3, can::FrameFormat::Extended, can::FrameType::Data};
     input.data[0] = std::byte{0x12};
     input.data[1] = std::byte{0x34};
     input.data[2] = std::byte{0x56};
-    const ::can_frame native = can::native::to_native(input);
+    const ::can_frame native = to_native(input);
     EXPECT_NE(native.can_id & CAN_EFF_FLAG, 0U);
     EXPECT_EQ(native.can_id & CAN_RTR_FLAG, 0U);
-    ASSERT_TRUE(can::native::from_native(native));
-    EXPECT_EQ(can::native::from_native(native).value().id, input.id);
-    EXPECT_EQ(can::native::from_native(native).value().data, input.data);
+    const auto decoded = from_native(native);
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value().id, input.id);
+    EXPECT_EQ(decoded.value().data, input.data);
 
     input.type = can::FrameType::Remote;
-    const ::can_frame remote = can::native::to_native(input);
+    const ::can_frame remote = to_native(input);
     EXPECT_NE(remote.can_id & CAN_RTR_FLAG, 0U);
-    ASSERT_TRUE(can::native::from_native(remote));
-    EXPECT_EQ(can::native::from_native(remote).value().type, can::FrameType::Remote);
+    const auto decoded_remote = from_native(remote);
+    ASSERT_TRUE(decoded_remote);
+    EXPECT_EQ(decoded_remote.value().type, can::FrameType::Remote);
 }
 
 TEST(Frame, RejectsErrorFramesFromNormalFramePath) {
     ::can_frame native{};
     native.can_id = CAN_ERR_FLAG | CAN_ERR_BUSOFF;
-    EXPECT_EQ(can::native::from_native(native).error().code, can::ErrorCode::InvalidFrame);
+    EXPECT_EQ(from_native(native).error().code, can::ErrorCode::InvalidFrame);
 }
 
-TEST(Filter, PreservesFormatInNativeMatch) {
+bool matches(const ::can_filter& filter, canid_t received) {
+    return (received & filter.can_mask) == (filter.can_id & filter.can_mask);
+}
+
+TEST(Filter, MatchesIdsAndFormatsExactly) {
     const can::Filter standard{0x123, 0x7FF, can::FrameFormat::Standard};
-    const ::can_filter standard_native = can::native::to_native(standard);
-    EXPECT_EQ(standard_native.can_id, 0x123U);
-    EXPECT_EQ(standard_native.can_mask, 0x7FFU | CAN_EFF_FLAG);
+    const ::can_filter standard_native = to_native(standard);
+    EXPECT_TRUE(matches(standard_native, 0x123));
+    EXPECT_FALSE(matches(standard_native, CAN_EFF_FLAG | 0x123));
 
     const can::Filter extended{0x123, 0x1FFFFFFF, can::FrameFormat::Extended};
-    const ::can_filter extended_native = can::native::to_native(extended);
-    EXPECT_EQ(extended_native.can_id, 0x123U | CAN_EFF_FLAG);
-    EXPECT_EQ(extended_native.can_mask, 0x1FFFFFFFU | CAN_EFF_FLAG);
+    const ::can_filter extended_native = to_native(extended);
+    EXPECT_TRUE(matches(extended_native, CAN_EFF_FLAG | 0x123));
+    EXPECT_FALSE(matches(extended_native, 0x123));
+}
+
+TEST(Filter, AppliesMaskedMatchingWithoutCrossFormatMatches) {
+    const ::can_filter filter = to_native(can::Filter{0x120, 0x7F0, can::FrameFormat::Standard});
+    EXPECT_TRUE(matches(filter, 0x12F));
+    EXPECT_FALSE(matches(filter, 0x130));
+    EXPECT_FALSE(matches(filter, CAN_EFF_FLAG | 0x12F));
 }
 
 TEST(Filter, ValidatesIdsAndMasks) {
-    EXPECT_TRUE(can::native::validate(can::Filter{0x7FF, 0x7FF, can::FrameFormat::Standard}));
-    EXPECT_EQ(can::native::validate(can::Filter{0x800, 0, can::FrameFormat::Standard}).error().code,
-              can::ErrorCode::InvalidArgument);
-    EXPECT_EQ(can::native::validate(can::Filter{0, 0x800, can::FrameFormat::Standard}).error().code,
-              can::ErrorCode::InvalidArgument);
-    EXPECT_EQ(can::native::validate(can::Filter{0x20000000, 0, can::FrameFormat::Extended}).error().code,
-              can::ErrorCode::InvalidArgument);
+    EXPECT_TRUE(validate(can::Filter{0x7FF, 0x7FF, can::FrameFormat::Standard}));
+    EXPECT_EQ(
+        validate(can::Filter{0x800, 0, can::FrameFormat::Standard}).error().code,
+        can::ErrorCode::InvalidArgument);
+    EXPECT_EQ(
+        validate(can::Filter{0, 0x800, can::FrameFormat::Standard}).error().code,
+        can::ErrorCode::InvalidArgument);
+    EXPECT_EQ(
+        validate(can::Filter{0x20000000, 0, can::FrameFormat::Extended}).error().code,
+        can::ErrorCode::InvalidArgument);
 }
 
 TEST(Event, DecodesErrorFramesAndUpdatesState) {
@@ -91,9 +118,9 @@ TEST(Event, DecodesErrorFramesAndUpdatesState) {
         ::can_frame native{};
         native.can_id = CAN_ERR_FLAG | test.id;
         native.data[1] = test.control;
-        const can::Event event = can::native::decode_error_frame(native, timestamp);
+        const can::Event event = decode_error_frame(native, timestamp);
         EXPECT_EQ(event.type, test.type);
-        EXPECT_EQ(can::native::apply_event(can::State::Unknown, event), test.state);
+        EXPECT_EQ(apply_event(can::State::Unknown, event), test.state);
     }
 }
 
@@ -101,13 +128,20 @@ TEST(Event, RecognizesRxOverflow) {
     ::can_frame native{};
     native.can_id = CAN_ERR_FLAG | CAN_ERR_CRTL;
     native.data[1] = CAN_ERR_CRTL_RX_OVERFLOW;
-    const can::Event event = can::native::decode_error_frame(native, {});
-    EXPECT_EQ(event.type, can::EventType::RxOverflow);
+    native.data[1] |= CAN_ERR_CRTL_RX_PASSIVE;
+    const can::Event event = decode_error_frame(native, {});
+    EXPECT_EQ(event.type, can::EventType::Passive);
+    EXPECT_EQ(event.detail, CAN_ERR_CRTL);
 
     can::Stats stats{};
-    can::native::update_stats(stats, event);
+    update_error_stats(stats, native);
     EXPECT_EQ(stats.error_frames, 1U);
     EXPECT_EQ(stats.rx_overruns, 1U);
+}
+
+TEST(Event, KeepsBusOffStateForNonStateDiagnostics) {
+    const can::Event event{can::EventType::ProtocolError};
+    EXPECT_EQ(apply_event(can::State::BusOff, event), can::State::BusOff);
 }
 
 TEST(Timestamp, UsesMonotonicClockDomain) {
