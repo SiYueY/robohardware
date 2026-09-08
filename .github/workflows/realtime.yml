@@ -1,0 +1,48 @@
+name: realtime
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        preset:
+          - normal
+          - no-exceptions
+          - asan-ubsan
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >-
+          cmake -S . -B build-${{ matrix.preset }}
+          -DROBOHARDWARE_BUILD_TESTS=ON
+          ${{ matrix.preset == 'no-exceptions' && '-DROBOHARDWARE_REALTIME_NO_EXCEPTIONS=ON' || '' }}
+          ${{ matrix.preset == 'asan-ubsan' && '-DROBOHARDWARE_ENABLE_ASAN_UBSAN=ON' || '' }}
+      - name: Build
+        run: cmake --build build-${{ matrix.preset }} --parallel
+      - name: Test
+        run: >-
+          ${{ matrix.preset == 'asan-ubsan' && 'ASAN_OPTIONS=detect_leaks=0' || '' }}
+          ctest --test-dir build-${{ matrix.preset }} --output-on-failure
+
+  tsan:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build-tsan -DROBOHARDWARE_BUILD_TESTS=ON -DROBOHARDWARE_ENABLE_TSAN=ON
+      - run: cmake --build build-tsan --parallel
+      - run: TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-tsan --output-on-failure
+
+  preempt-rt:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, preempt-rt]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DROBOHARDWARE_BUILD_TESTS=ON
+      - run: cmake --build build --parallel
+      - run: ctest --test-dir build --output-on-failure
+      - run: ./build/realtime_500hz_benchmark
