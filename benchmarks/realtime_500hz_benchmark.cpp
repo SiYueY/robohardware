@@ -6,11 +6,9 @@
 
 int main() {
     using namespace std::chrono_literals;
-    realtime::PeriodicTaskOptions options;
+    realtime::PeriodicTask::Options options;
     options.period = 2ms;
-    options.scheduler = {realtime::SchedulingPolicy::Other, 0};
-    options.memory.lock_memory = false;
-    options.mode = realtime::RealtimeMode::BestEffort;
+    options.scheduler = realtime::Scheduler::Other;
 
     realtime::PeriodicTask task(options);
     const auto started = task.start([](const realtime::CycleInfo&) noexcept {});

@@ -7,8 +7,11 @@ option(ROBOHARDWARE_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(ROBOHARDWARE_REALTIME_NO_EXCEPTIONS "Compile only the realtime target without exceptions" OFF)
 
 add_library(realtime
+  src/realtime/affinity.cpp
   src/realtime/clock.cpp
-  src/realtime/periodic_task.cpp)
+  src/realtime/memory.cpp
+  src/realtime/periodic_task.cpp
+  src/realtime/scheduler.cpp)
 add_library(realtime::realtime ALIAS realtime)
 target_compile_features(realtime PUBLIC cxx_std_17)
 target_include_directories(realtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

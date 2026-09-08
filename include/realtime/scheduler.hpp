@@ -1,12 +1,13 @@
 #pragma once
 
+#include "realtime/error.hpp"
+
 namespace realtime {
 
-enum class SchedulingPolicy { Other, Fifo };
+enum class Scheduler { Other, Fifo };
 
-struct SchedulerConfig {
-    SchedulingPolicy policy{SchedulingPolicy::Fifo};
-    int priority{0};
-};
+/// Sets the scheduling policy of the calling thread.
+/// `Scheduler::Fifo` requires a valid FIFO priority and may require privileges.
+Result<void> set_scheduler(Scheduler scheduler, int priority = 0) noexcept;
 
 }  // namespace realtime

@@ -1,4 +1,4 @@
-#include "realtime/buffer.hpp"
+#include "realtime/value.hpp"
 #include "realtime/queue.hpp"
 
 #include <gtest/gtest.h>
@@ -22,17 +22,16 @@ bool valid(const Payload& value) noexcept {
            value.checksum == (value.sequence ^ value.complement ^ 0xa5a5a5a5a5a5a5a5ULL);
 }
 
-TEST(BufferConcurrency, SpscPayloadIntegrityAndSlotReuse) {
+TEST(ValueConcurrency, SpscPayloadIntegrityAndSlotReuse) {
     constexpr std::uint64_t kCount = 5000000;
-    realtime::Buffer<Payload> buffer;
+    realtime::Value<Payload> buffer;
     std::atomic<bool> done{false};
     std::atomic<std::uint64_t> writes{0};
     std::thread producer([&] {
         for (std::uint64_t i = 1; i <= kCount;) {
-            if (buffer.write(payload(i))) {
-                writes.store(i, std::memory_order_release);
-                ++i;
-            }
+            buffer.write(payload(i));
+            writes.store(i, std::memory_order_release);
+            ++i;
         }
         done.store(true, std::memory_order_release);
     });

@@ -1,1975 +1,2359 @@
 # RoboHardware Realtime 模块设计
 
-## 1. 模块定位与设计原则
+## 1. 定位与边界
 
-`realtime` 是 RoboHardware 中面向 Linux 的 C++17 实时基础模块。
+### 1.1 模块定位
 
-它提供：
+`realtime` 是面向 Linux 的通用 C++17 实时基础工具模块。
+
+它提供构建实时线程和周期任务时最常用的基础能力：
+
+* monotonic clock；
+* realtime scheduler；
+* CPU affinity；
+* process memory locking；
+* periodic task；
+* RT / non-RT 数据交换；
+* 最小运行统计；
+* 结构化错误。
+
+典型用途包括：
 
 ```text
-Clock
-Realtime Scheduling
-CPU Affinity
-Memory Lock
-PeriodicTask
-RT / non-RT Buffer
-Bounded Queue
-Status / Stats
-Error
+机器人硬件通信线程
+周期控制线程
+CAN / EtherCAT / Serial worker
+传感器采集线程
+实时数据交换
+独立实时工具程序
 ```
 
-它不负责：
+`realtime` 的目标是：
 
-```text
-CAN
-Serial
-CANopen
-CiA402
-Device
-System Lifecycle
-Safety Policy
-Robot Controller
-ROS2
-```
+> 提供少量稳定、明确、可组合的 Linux realtime primitives，使调用者不需要直接处理 pthread、scheduler、affinity、mlockall 和 absolute sleep 等底层细节。
 
-模块目标是：
+它不是 realtime application framework。
 
-> 提供一组轻量、确定、可独立复用的 Linux realtime primitive，使 RoboHardware 的 System 和 Device 层能够可靠构建 500 Hz 等实时任务，而不是构建新的通用 runtime framework。
+---
 
-### 平台范围
+### 1.2 平台与版本范围
 
-V1 明确：
+V1：
 
 ```text
 Language:
     C++17
 
 Platform:
-    Linux only
+    Linux
 
-Development:
-    Generic Linux kernel
+Scheduling:
+    SCHED_OTHER
+    SCHED_FIFO
 
-Formal realtime validation:
-    PREEMPT_RT
+Affinity:
+    single CPU
+
+Clock:
+    CLOCK_MONOTONIC
+
+Periodic wait:
+    absolute deadline
+
+Memory:
+    mlockall(MCL_CURRENT | MCL_FUTURE)
 ```
 
-V1 不承诺：
+实现允许直接使用：
 
 ```text
-Windows
-macOS
-BSD
-Generic POSIX portability
-```
-
-因此可以直接使用：
-
-```text
-pthread_setschedparam
-pthread_setaffinity_np
-mlockall
-clock_gettime
-clock_nanosleep
-CLOCK_MONOTONIC
-```
-
-而不提前引入跨平台 backend abstraction。
-
-### 核心原则
-
-1. RT fast path 不进行动态内存分配。
-2. RT fast path 不进行不可预测阻塞。
-3. RT fast path 不依赖异常控制流。
-4. 周期任务采用 absolute deadline。
-5. Overrun 跳过已错过周期，不进行 catch-up。
-6. Realtime 只报告时间与执行事实，不决定机器人安全动作。
-7. RT / non-RT 数据结构必须 bounded。
-8. Buffer 与 Queue 按数据语义区分。
-9. 所有 realtime 时间属于统一 `CLOCK_MONOTONIC` time domain。
-10. 对外时间类型兼容 `std::chrono`。
-11. Required 模式禁止静默降级。
-12. 并发 primitive 必须符合 C++17 memory model，不依赖特定 CPU 的偶然行为。
-13. 接口预留，实现推迟。
-14. 不建设 Executor、TaskGraph、MessageBus 等通用 runtime。
-15. 所有未来扩展必须复用现有语义，而不是重新设计第二套 realtime API。
-
-主要参考：
-
-```text
-cactus-rt
-    Linux realtime thread
-    scheduling
-    affinity
-    memory locking
-    statistics
-
-ros-controls/realtime_tools
-    RT/non-RT exchange
-    latest-value semantics
-    realtime data structures
-
-ros2-realtime-examples
-    Linux realtime setup
-    PREEMPT_RT practices
-
-Linux / C++17
-    pthread
-    sched
-    clock_nanosleep
-    memory model
-```
-
-开源项目提供工程实现参考，Linux API 和 C++ memory model 是最终语义依据。
-
----
-
-## 2. 模块结构与核心接口
-
-推荐目录：
-
-```text
-include/realtime/
-├── clock.hpp
-├── scheduler.hpp
-├── affinity.hpp
-├── memory.hpp
-├── periodic_task.hpp
-├── buffer.hpp
-├── queue.hpp
-├── status.hpp
-├── statistics.hpp
-└── error.hpp
-
-src/realtime/
-├── clock.cpp
-├── scheduler.cpp
-├── affinity.cpp
-├── memory.cpp
-├── periodic_task.cpp
-├── statistics.cpp
-└── error.cpp
-```
-
-V1 不公开：
-
-```text
-thread.hpp
-```
-
-因为当前实际需要的 realtime thread 语义已经由：
-
-```text
-PeriodicTask
-```
-
-覆盖。
-
-如果未来出现明确的：
-
-```text
-non-periodic realtime worker
-```
-
-需求，再增加 `realtime::Thread`。
-
-但未来如果引入 `realtime::Thread`，必须复用：
-
-```text
-SchedulerConfig
-AffinityConfig
-MemoryConfig
-RealtimeMode
-Status
-Error
-```
-
-等已有语义，不允许重新建立第二套 realtime thread 配置和生命周期模型。
-
-namespace：
-
-```cpp
-namespace realtime {}
-```
-
-建议 V1 核心公共 API：
-
-```cpp
-namespace realtime {
-
-class Clock;
-
-using TimePoint = Clock::time_point;
-using Duration = Clock::duration;
-
-enum class RealtimeMode {
-    Required,
-    BestEffort,
-};
-
-enum class SchedulingPolicy {
-    Other,
-    Fifo,
-};
-
-struct SchedulerConfig;
-struct AffinityConfig;
-struct MemoryConfig;
-
-struct PeriodicTaskOptions;
-struct CycleInfo;
-
-struct Status;
-struct Stats;
-
-class PeriodicTask;
-
-template <typename T>
-class Buffer;
-
-template <typename T, std::size_t N>
-class Queue;
-
-}
-```
-
-总体关系：
-
-```text
-                  System / Device
-                        │
-                        ▼
-                  PeriodicTask
-                        │
-       ┌────────────────┼────────────────┐
-       ▼                ▼                ▼
-     Clock          Scheduler          Stats
-                        │
-                Affinity / Memory
-                        │
-                        ▼
-                   Linux Thread
-
-
-               RT / non-RT data
-                        │
-             ┌──────────┴──────────┐
-             ▼                     ▼
-         Buffer<T>             Queue<T,N>
-       latest-value          ordered-events
-```
-
----
-
-## 3. 时间、调度与周期执行
-
-### 3.1 Clock
-
-Realtime 不直接使用：
-
-```cpp
-using Clock = std::chrono::steady_clock;
-```
-
-作为底层事实时钟，因为 C++ 标准并不保证它与 Linux `CLOCK_MONOTONIC` 使用相同实现和 epoch。
-
-V1 定义明确绑定 Linux `CLOCK_MONOTONIC` 的 chrono-compatible Clock：
-
-```cpp
-namespace realtime {
-
-class Clock {
-public:
-    using rep        = std::int64_t;
-    using period     = std::nano;
-    using duration   = std::chrono::nanoseconds;
-    using time_point = std::chrono::time_point<Clock>;
-
-    static constexpr bool is_steady = true;
-
-    static time_point now() noexcept;
-};
-
-using TimePoint = Clock::time_point;
-using Duration = Clock::duration;
-
-}
-```
-
-`Clock::now()` 底层使用：
-
-```text
-clock_gettime(CLOCK_MONOTONIC)
-```
-
-并转换成：
-
-```text
-nanoseconds since CLOCK_MONOTONIC epoch
-```
-
-这样同时满足：
-
-```text
-明确 Linux time domain
-+
-std::chrono duration/time_point 兼容
-```
-
-所有参与：
-
-```text
-period
-deadline
-control dt
-timeout
-freshness
-lateness
-execution time
-statistics
-```
-
-的时间都必须使用该 Clock。
-
-禁止：
-
-```text
-CLOCK_REALTIME
-std::chrono::system_clock
-wall clock
-```
-
-参与 realtime 控制逻辑。
-
-`Clock::time_point` 与 Linux `timespec` 的转换属于内部实现细节，使用标准 chrono duration 转换保证纳秒精度。
-
----
-
-### 3.2 Scheduler
-
-V1 正式支持：
-
-```text
-SCHED_FIFO
-SCHED_OTHER
-```
-
-其中：
-
-```text
-SCHED_FIFO
-    realtime execution
-
-SCHED_OTHER
-    development / BestEffort fallback
-```
-
-定义：
-
-```cpp
-enum class SchedulingPolicy {
-    Other,
-    Fifo,
-};
-
-struct SchedulerConfig {
-    SchedulingPolicy policy{SchedulingPolicy::Fifo};
-    int priority{0};
-};
-```
-
-底层：
-
-```text
+pthread_create()
+pthread_join()
 pthread_setschedparam()
+pthread_setaffinity_np()
+
+sched_get_priority_min()
+sched_get_priority_max()
+
+clock_gettime()
+clock_nanosleep()
+
+mlockall()
 ```
 
-V1 不支持：
+当前没有第二个平台，因此不建立：
 
 ```text
+Platform
+Backend
+SchedulerBackend
+ThreadBackend
+ClockBackend
+SystemInterface
+```
+
+等跨平台抽象。
+
+---
+
+### 1.3 非目标
+
+V1 不负责：
+
+```text
+Realtime App
+Runtime
+Executor
+ThreadPool
+
+通用 Thread abstraction
+CyclicThread hierarchy
+
+CPU Manager
+CPU Topology
+CPU auto assignment
+NUMA
+
 SCHED_RR
 SCHED_DEADLINE
+
+Realtime Mutex
+Semaphore
+ConditionVariable
+
+Logging
+Tracing
+Metrics framework
+
+ROS / ROS2 integration
+
+general-purpose lock-free container library
 ```
 
-也不为这些调度策略提前设计复杂配置。
+也不负责 Linux 系统部署：
 
-如果未来出现真实需求，再进行受控 API 演进。
+```text
+isolcpus
+nohz_full
+rcu_nocbs
+IRQ affinity
+PREEMPT_RT installation
+CPU frequency governor
+kernel boot parameters
+```
+
+这些属于部署层。
 
 ---
 
-### 3.3 CPU Affinity
+### 1.4 核心原则
 
-V1 支持：
+V1 必须遵守：
 
-```text
-no affinity
-single CPU affinity
-```
+1. 每个基础工具可以独立使用。
+2. `PeriodicTask` 组合 scheduler / affinity / clock，而不是独占这些能力。
+3. memory locking 是 process-level capability，不属于单个 task。
+4. 默认配置必须合法可运行。
+5. realtime hot path 不主动进行动态内存分配。
+6. realtime hot path 不执行隐藏 blocking I/O。
+7. realtime hot path 不存在测试 hook。
+8. 不为了测试引入 production syscall mock 分支。
+9. callback 必须满足明确 realtime contract。
+10. 周期调度使用 absolute deadline，避免累计漂移。
+11. overrun 后不 burst catch-up。
+12. 数据交换 primitive 必须明确并发 ownership。
+13. 公共 API 使用简单名称，复杂实现约束写入 contract。
+14. 不因理论通用性增加没有真实 caller 的公共类型。
+15. benchmark 决定是否需要进一步性能优化。
 
-接口：
+最终目标：
+
+> API 简单，实时语义完整；实现轻量，行为可预测。
+
+---
+
+## 2. 基础工具与数据模型
+
+### 2.1 时间类型
+
+公共时间类型：
 
 ```cpp
-struct AffinityConfig {
-    std::optional<int> cpu;
+using Duration = std::chrono::nanoseconds;
+
+using TimePoint =
+    std::chrono::time_point<
+        std::chrono::steady_clock,
+        Duration>;
+```
+
+所有 realtime scheduling 时间必须属于：
+
+```text
+monotonic domain
+```
+
+不得使用 wall clock 作为周期调度基准。
+
+---
+
+### 2.2 Clock
+
+```cpp
+class Clock {
+public:
+    static TimePoint now() noexcept;
 };
 ```
 
-底层：
+语义：
 
-```text
-pthread_setaffinity_np()
-```
+> 返回当前 monotonic time。
 
-不提供：
-
-```text
-NUMA framework
-automatic core assignment
-CPU topology manager
-```
-
-CPU isolation、IRQ affinity 等属于系统部署策略，不属于 realtime module API。
-
----
-
-### 3.4 Memory Lock
-
-封装：
-
-```text
-mlockall(MCL_CURRENT | MCL_FUTURE)
-```
-
-配置：
-
-```cpp
-struct MemoryConfig {
-    bool lock_memory{true};
-    std::size_t prefault_bytes{0};
-};
-```
-
-可在 startup 阶段进行：
-
-```text
-stack prefault
-preallocated memory prefault
-```
-
-目标：
-
-> 降低 realtime runtime 中发生 page fault 的风险。
-
-需要明确：
-
-```text
-mlockall != hard realtime guarantee
-```
-
-它只是实时运行条件之一。
-
----
-
-### 3.5 RealtimeMode
-
-定义：
-
-```cpp
-enum class RealtimeMode {
-    Required,
-    BestEffort,
-};
-```
-
-#### Required
-
-如果用户明确要求的：
-
-```text
-SCHED_FIFO
-memory lock
-CPU affinity
-```
-
-任一关键能力失败：
-
-```text
-PeriodicTask::start() fails
-```
-
-禁止静默退化。
-
-#### BestEffort
-
-允许部分 realtime 能力失败并继续运行，但：
-
-```text
-实际状态必须通过 Status 可见
-```
-
----
-
-### 3.6 Status
-
-统一提供：
-
-```cpp
-struct Status {
-    bool running{false};
-
-    bool realtime_scheduling{false};
-    bool memory_locked{false};
-    bool affinity_applied{false};
-
-    SchedulingPolicy policy{SchedulingPolicy::Other};
-    int priority{0};
-    std::optional<int> cpu;
-};
-```
-
-System 可以直接聚合：
-
-```text
-realtime::Status
-    ↓
-robohardware::SystemStatus
-```
-
-而不依赖日志文本判断 realtime 是否生效。
-
----
-
-### 3.7 PeriodicTask
-
-`PeriodicTask` 是 V1 最核心的执行 primitive。
-
-配置：
-
-```cpp
-struct PeriodicTaskOptions {
-    Duration period;
-
-    SchedulerConfig scheduler;
-    AffinityConfig affinity;
-    MemoryConfig memory;
-
-    RealtimeMode mode{RealtimeMode::Required};
-};
-```
-
-典型：
-
-```cpp
-realtime::PeriodicTask task(options);
-
-auto result = task.start(
-    [&](const realtime::CycleInfo& cycle) noexcept {
-        // bounded realtime work
-    });
-```
-
-callback 必须：
-
-```text
-bounded
-noexcept
-return within predictable time
-```
-
----
-
-### 3.8 Absolute Deadline
-
-周期调度必须使用：
+实现应基于：
 
 ```text
 CLOCK_MONOTONIC
-+
-clock_nanosleep(
-    TIMER_ABSTIME
-)
 ```
 
-执行：
+或具有等价 monotonic 语义的实现。
+
+`Clock::now()`：
 
 ```text
-T0
- ↓
-deadline = T0 + period
- ↓
-sleep until deadline
- ↓
-capture wakeup time
- ↓
-callback
- ↓
-advance absolute deadline
+MUST:
+    noexcept
+    monotonic
+    allocation-free
 ```
 
-禁止：
-
-```cpp
-std::this_thread::sleep_for(period);
-```
-
-避免：
+V1 不增加：
 
 ```text
-execution time
-+
-scheduler latency
-+
-relative sleep
+WallClock
+SystemClock wrapper
+IClock
+ClockProvider
+VirtualClock
 ```
 
-逐周期累积形成 drift。
+如果测试需要模拟时间，应优先抽取纯 deadline calculation 逻辑测试，而不是污染 production Clock API。
 
 ---
 
-### 3.9 CycleInfo
+### 2.3 Scheduler
 
-定义：
-
-```cpp
-struct CycleInfo {
-    std::uint64_t sequence;
-
-    TimePoint scheduled_time;
-    TimePoint wakeup_time;
-
-    Duration lateness;
-    std::uint32_t missed_periods;
-};
-```
-
-语义固定：
-
-```text
-scheduled_time
-    当前周期理论 deadline
-
-wakeup_time
-    当前 worker 实际获得执行机会的时间
-
-lateness
-    max(wakeup_time - scheduled_time, 0)
-
-missed_periods
-    floor(lateness / period)
-```
-
-即：
+公共调度类型：
 
 ```cpp
-lateness =
-    wakeup_time > scheduled_time
-        ? wakeup_time - scheduled_time
-        : Duration::zero();
-
-missed_periods =
-    static_cast<std::uint32_t>(
-        lateness / period);
-```
-
-例如：
-
-```text
-period = 2 ms
-
-lateness = 1.9 ms
-    missed_periods = 0
-
-lateness = 2.0 ms
-    missed_periods = 1
-
-lateness = 4.1 ms
-    missed_periods = 2
-```
-
-下一 deadline：
-
-```text
-scheduled_time
-+
-(missed_periods + 1) × period
-```
-
-例如：
-
-```text
-scheduled = 10 ms
-wakeup    = 14.1 ms
-period    = 2 ms
-
-lateness = 4.1 ms
-missed   = 2
-
-next deadline = 16 ms
-```
-
----
-
-### 3.10 Overrun
-
-V1 固定采用：
-
-```text
-SkipMissedPeriods
-```
-
-不提供可配置 `OverrunPolicy`。
-
-逻辑：
-
-```text
-deadline miss
-    ↓
-calculate missed_periods
-    ↓
-skip elapsed periods
-    ↓
-align to next future absolute deadline
-```
-
-禁止：
-
-```text
-catch-up execution
-```
-
-Realtime 只报告：
-
-```text
-lateness
-missed_periods
-Stats
-```
-
-是否：
-
-```text
-Hold
-Quick Stop
-Disable
-Fault
-```
-
-由 System/Safety 决定。
-
----
-
-### 3.11 Callback 与 Stop
-
-`PeriodicTask` 自己负责 stop 检查。
-
-内部运行模型：
-
-```cpp
-while (!stop_requested_.load(std::memory_order_acquire)) {
-
-    wait_until(deadline);
-
-    if (stop_requested_.load(std::memory_order_acquire)) {
-        break;
-    }
-
-    callback(cycle);
-
-    advance_deadline();
-}
-```
-
-普通 callback 不需要自行查询 stop token。
-
-但是 callback 必须 bounded。
-
-如果用户实现：
-
-```cpp
-while (true) {}
-```
-
-则 cooperative shutdown 无法终止正在执行的 callback。
-
-Realtime V1 不使用：
-
-```text
-pthread_cancel
-async callback termination
-forced preemption
-```
-
----
-
-### 3.12 stop() Contract
-
-V1：
-
-```cpp
-Result<void> stop();
-```
-
-定义为同步 stop：
-
-```text
-request stop
-    ↓
-wake / finish current wait
-    ↓
-allow current callback to return
-    ↓
-worker exits
-    ↓
-join
-    ↓
-stop() returns
-```
-
-因此：
-
-> `stop()` 返回时 worker thread 已完全退出。
-
-callback 所访问的资源必须至少存活到：
-
-```text
-stop() / join complete
-```
-
-以后如有实际需求，可拆成：
-
-```text
-request_stop()
-join()
-```
-
-但 V1 不需要。
-
----
-
-## 4. RT / Non-RT 数据交换
-
-Realtime V1 只提供：
-
-```text
-Buffer<T>
-Queue<T,N>
-```
-
-两个 primitive。
-
-不提供：
-
-```text
-MessageBus
-EventBus
-Channel
-Mailbox Framework
-Generic IPC
-```
-
-### 4.1 Buffer<T>
-
-语义：
-
-> 单生产者、单消费者、只关心最新完整值。
-
-V1 Contract：
-
-```text
-SPSC
-latest-value
-fixed/preallocated storage
-non-blocking
-runtime no allocation
-initially empty
-```
-
-接口：
-
-```cpp
-template <typename T>
-class Buffer {
-public:
-    bool write(const T& value) noexcept;
-    bool read(T& value) const noexcept;
-};
-```
-
-`read()`：
-
-```text
-false
-    Buffer 创建后尚未 publish 任何 value
-
-true
-    value 包含最近一次完整 publish 的数据
-```
-
-不会自动发布：
-
-```cpp
-T{}
-```
-
-也不需要：
-
-```cpp
-is_initialized()
-```
-
-以避免重复状态查询。
-
----
-
-### 4.2 Buffer 不负责 Freshness
-
-Buffer 只表达：
-
-```text
-never published
-published
-```
-
-它不表达：
-
-```text
-stale
-timeout
-sensor validity
-freshness
-```
-
-这些语义由：
-
-```text
-T 自身
-或
-System / Device
-```
-
-负责。
-
----
-
-### 4.3 Publication Memory Ordering
-
-publication contract：
-
-```text
-Writer:
-    complete payload write
-          ↓
-    release publication
-
-Reader:
-    acquire publication
-          ↓
-    read stable published slot
-```
-
-release/acquire 建立：
-
-```text
-payload writes
-    happens-before
-reader payload reads
-```
-
-不使用：
-
-```text
-atomic_signal_fence
-compiler barrier
-```
-
-代替真正的跨线程同步。
-
----
-
-### 4.4 Buffer Slot Ownership
-
-真正的并发难点不是 publication ordering，而是：
-
-```text
-slot reuse
-```
-
-禁止 naive double buffer：
-
-```text
-Writer                       Reader
-
-publish A
-                             read A
-
-publish B
-
-rewrite A  ← race
-                             still reading A
-```
-
-V1 Buffer 必须：
-
-```text
-固定多槽
-明确 slot ownership
-明确 publication generation/version
-禁止 writer 重写 reader 仍可能访问的 slot
-```
-
-实现必须具备：
-
-```text
-documented ownership state machine
-C++17 data-race-free reasoning
-long-running concurrency tests
-```
-
-V1 实现策略固定为：
-
-> **SPSC fixed multi-slot latest-value buffer with explicit sequence/version publication and slot ownership protection.**
-
-这里已经足以指导实现。
-
-具体原子变量布局，例如：
-
-```text
-generation/index packing
-atomic<uint64_t>
-per-slot sequence
-reader ownership marker
-```
-
-属于代码实现细节，不在公共设计文档中继续固定。
-
-不得实现未经证明的 naive double-buffer 变体。
-
-实现应参考成熟项目，并通过并发测试验证。
-
----
-
-### 4.5 Buffer 类型约束
-
-`T` 应优先：
-
-```text
-fixed-size
-trivially copyable where practical
-no owning dynamic allocation
-cheap to copy
-```
-
-不推荐：
-
-```text
-std::string
-std::vector
-std::map
-std::unordered_map
-dynamic ownership graph
-```
-
-进入 RT Buffer。
-
-不设置：
-
-```text
-T <= 64 bytes
-T <= cache line
-```
-
-之类硬限制。
-
-大对象优化必须：
-
-```text
-benchmark first
-```
-
-而不是根据 cache-line 尺寸猜测。
-
-同时明确：
-
-> `Buffer<T>` 不是 System Runtime Snapshot 的唯一实现方式。
-
-System 可以使用专用 frozen RuntimeStorage + stable View。
-
----
-
-### 4.6 Queue<T,N>
-
-语义：
-
-> 单生产者、单消费者、有序、有界事件流。
-
-V1 Contract：
-
-```text
-SPSC
-bounded
-fixed capacity
-runtime no allocation
-ordered FIFO
-```
-
-接口：
-
-```cpp
-template <typename T, std::size_t N>
-class Queue {
-public:
-    bool try_push(const T& value) noexcept;
-    bool try_pop(T& value) noexcept;
-};
-```
-
-满：
-
-```text
-try_push() == false
-```
-
-空：
-
-```text
-try_pop() == false
-```
-
-Queue 不：
-
-```text
-block
-resize
-allocate
-overwrite oldest item automatically
-```
-
----
-
-### 4.7 SPSC Ownership
-
-一个 Queue 实例的：
-
-```text
-producer thread
-consumer thread
-```
-
-必须在初始化阶段确定，并在 Runtime 内保持不变。
-
-不允许：
-
-```text
-Device A ─┐
-Device B ─┼→ same Queue::try_push()
-Device C ─┘
-```
-
-如需要多个 producer：
-
-```text
-Device A → Queue A ─┐
-Device B → Queue B ─┼→ System Aggregator
-Device C → Queue C ─┘
-```
-
-或由上层 non-RT context 先序列化。
-
-System 层负责这种多 producer 编排，Realtime 模块本身不升级成 MPSC。
-
-V1 不实现：
-
-```text
-MPSC
-MPMC
-```
-
----
-
-### 4.8 Buffer 与 Queue 的选择
-
-依据数据语义：
-
-```text
-只关心最新状态
-    → Buffer
-
-每个事件都有意义
-    → Queue
-```
-
-不要因为：
-
-```text
-数据对象较大
-```
-
-就机械将 Buffer 替换成 Queue。
-
----
-
-## 5. RT 约束、状态、错误与测试
-
-### 5.1 RT Fast Path
-
-禁止：
-
-```text
-heap allocation
-free/delete
-blocking mutex
-condition_variable wait
-filesystem I/O
-blocking network I/O
-formatted synchronous logging
-configuration parsing
-dynamic plugin loading
-exception as normal flow
-```
-
-运行模型：
-
-```text
-configure
- ↓
-allocate
- ↓
-precompute
- ↓
-freeze
- ↓
-run
-```
-
-核心 RT API 推荐：
-
-```cpp
-noexcept
-```
-
----
-
-### 5.2 Mutex
-
-并非模块完全禁止 mutex。
-
-允许用于：
-
-```text
-configuration
-startup
-shutdown
-non-RT control path
-```
-
-禁止的是：
-
-> deadline-sensitive RT fast path 中不可预测地等待 mutex。
-
----
-
-### 5.3 Error
-
-Startup/non-RT API 使用轻量错误：
-
-```cpp
-enum class ErrorCode {
-    InvalidArgument,
-    PermissionDenied,
-    SchedulingFailed,
-    AffinityFailed,
-    MemoryLockFailed,
-    ThreadCreateFailed,
-    ClockError,
-    InvalidState,
-};
-```
-
-系统原生错误来源必须显式区分：
-
-```cpp
-enum class NativeErrorDomain : std::uint8_t {
-    None,
-    Errno,
-    Pthread,
-};
-```
-
-错误：
-
-```cpp
-struct Error {
-    ErrorCode code;
-    NativeErrorDomain native_domain{NativeErrorDomain::None};
-    int native_code{0};
-};
-```
-
-原因是 Linux API 存在两种常见错误语义。
-
-#### syscall 风格
-
-例如：
-
-```text
-mlockall
-clock_gettime
-```
-
-通常：
-
-```text
-return -1
-errno contains error
-```
-
-此时：
-
-```cpp
-native_domain = NativeErrorDomain::Errno;
-native_code = errno;
-```
-
-#### pthread 风格
-
-例如：
-
-```text
-pthread_setschedparam
-pthread_setaffinity_np
-pthread_create
-```
-
-通常：
-
-```text
-return error number directly
-```
-
-此时：
-
-```cpp
-native_domain = NativeErrorDomain::Pthread;
-native_code = rc;
-```
-
-不得混淆两种来源。
-
-Realtime 只保留底层错误事实，不转换成：
-
-```text
-SystemFault
-SafetyAction
-RobotFault
-```
-
----
-
-### 5.4 RT Fast Path Error
-
-RT primitive 使用：
-
-```text
-bool
-small enum
-```
-
-例如：
-
-```cpp
-enum class QueueStatus {
-    Ok,
-    Empty,
-    Full,
-};
-```
-
-避免在 RT path 构造复杂 Error/Result。
-
----
-
-### 5.5 Stats
-
-长期统计：
-
-```cpp
-struct Stats {
-    std::uint64_t cycles{0};
-    std::uint64_t deadline_misses{0};
-    std::uint64_t missed_periods{0};
-
-    Duration min_lateness{};
-    Duration max_lateness{};
-
-    Duration min_execution{};
-    Duration max_execution{};
-};
-```
-
-职责：
-
-```text
-CycleInfo
-    当前周期事实
-
-Stats
-    长期聚合事实
-```
-
-System 可读取：
-
-```text
-Status
-Stats
-```
-
-用于整体状态聚合。
-
----
-
-### 5.6 高频 Trace
-
-如果需要完整周期样本：
-
-```cpp
-struct CycleSample {
-    std::uint64_t sequence;
-    std::int64_t lateness_ns;
-    std::int64_t execution_ns;
-    std::uint32_t flags;
+enum class Scheduler : std::uint8_t {
+    Other,
+    Fifo,
 };
 ```
 
 使用：
 
-```text
-RT
- ↓
-Queue<CycleSample,N>
- ↓
-non-RT collector
+```cpp
+realtime::set_scheduler(
+    realtime::Scheduler::Fifo,
+    80);
 ```
 
-Realtime 不实现：
+这里使用：
 
 ```text
-CSV
-Prometheus
-InfluxDB
-ROS publisher
-UI
+Scheduler
+```
+
+而不是：
+
+```text
+SchedulingPolicy
+Policy
+SchedulerConfig
+```
+
+原因：
+
+```cpp
+realtime::Scheduler::Fifo
+```
+
+足够短，并且领域语义明确。
+
+---
+
+### 2.4 Scheduler API
+
+```cpp
+Result<void> set_scheduler(
+    Scheduler scheduler,
+    int priority = 0) noexcept;
+```
+
+该函数作用于：
+
+> 调用它的线程。
+
+因此 API 不重复写：
+
+```text
+current
+thread
+```
+
+例如不使用：
+
+```cpp
+set_current_thread_scheduler()
+```
+
+#### Scheduler::Other
+
+要求：
+
+```text
+priority == 0
+```
+
+否则：
+
+```cpp
+ErrorCode::InvalidArgument
+```
+
+#### Scheduler::Fifo
+
+`priority` 必须满足：
+
+```text
+sched_get_priority_min(SCHED_FIFO)
+    <= priority <=
+sched_get_priority_max(SCHED_FIFO)
+```
+
+非法 priority：
+
+```cpp
+ErrorCode::InvalidArgument
+```
+
+系统调用失败：
+
+* 返回结构化 Error；
+* 保留 pthread/native error code；
+* 不 throw。
+
+---
+
+### 2.5 Affinity
+
+公共 API：
+
+```cpp
+Result<void> set_affinity(
+    int cpu) noexcept;
+```
+
+语义：
+
+> 将调用线程绑定到指定 CPU。
+
+使用：
+
+```cpp
+realtime::set_affinity(3);
+```
+
+API 至少验证：
+
+```text
+cpu >= 0
+```
+
+最终有效性由 Linux affinity syscall 决定。
+
+V1 不增加：
+
+```text
+AffinityConfig
+CpuAffinity
+CpuSet
+CpuMask
+std::vector<int> cpus
+automatic CPU selection
+```
+
+单 CPU affinity 已覆盖最常见 realtime worker 场景。
+
+如果不需要 affinity：
+
+> 不调用 `set_affinity()`。
+
+---
+
+### 2.6 Memory Lock
+
+公共 API：
+
+```cpp
+Result<void> lock_memory() noexcept;
+```
+
+实现：
+
+```text
+mlockall(MCL_CURRENT | MCL_FUTURE)
+```
+
+语义：
+
+> 锁定当前进程的现有和后续映射内存，降低运行期间发生 major/minor page fault 的风险。
+
+这是：
+
+```text
+process-level
+```
+
+能力，不属于：
+
+```text
+PeriodicTask
+thread
+```
+
+因此 `PeriodicTask::Options` 不包含：
+
+```text
+MemoryConfig
+lock_memory
+prefault_bytes
+```
+
+典型调用：
+
+```cpp
+auto result = realtime::lock_memory();
+
+if (!result) {
+    // handle before starting RT workers
+}
+```
+
+V1 不提供：
+
+```text
+MemoryConfig
+unlock_memory()
+prefault_bytes
+memory manager
 ```
 
 ---
 
-### 5.7 Ownership
+### 2.7 Prefault
 
-callback 使用的所有对象：
+V1 不公开通用 prefault API。
 
-```text
-start 前创建
- ↓
-Runtime 中冻结
- ↓
-worker 生命周期内保持有效
- ↓
-stop/join 完成
- ↓
-才能释放
-```
-
-禁止：
+特别是不得通过：
 
 ```text
-worker still running
-       ↓
-callback dependency destroyed
+allocate arbitrary heap buffer
+touch every 4 KB
 ```
 
-Realtime 模块不通过大量 `shared_ptr` 隐藏不正确的 ownership。
+就宣称完成：
+
+```text
+thread stack prefault
+complete realtime memory preparation
+```
+
+如果未来真实需求要求：
+
+```text
+thread stack prefault
+known workspace prefault
+```
+
+则需要明确目标对象和语义后再单独设计。
 
 ---
 
-### 5.8 Testing
+### 2.8 Error
 
-测试关注四类问题：
+公共错误模型保持最小：
 
-```text
-Unit / Functional
-Concurrency Correctness
-PREEMPT_RT Performance
-Long-running Stress
+```cpp
+enum class ErrorCode {
+    InvalidArgument,
+    InvalidState,
+    SystemError,
+};
+
+struct Error {
+    ErrorCode code{ErrorCode::InvalidState};
+    int native_code{0};
+};
 ```
 
-#### Unit / Functional
+通过：
 
-覆盖：
+```cpp
+Result<T>
+```
+
+返回。
+
+具体 Linux / pthread 原因保存在：
+
+```cpp
+native_code
+```
+
+中。
+
+不创建：
 
 ```text
-Clock conversion
-Scheduler validation
-Affinity validation
-Memory lock failure
-Required failure
-BestEffort fallback
+SchedulerError
+AffinityError
+MemoryError
+ThreadError
+RealtimeException
+```
 
-PeriodicTask start/stop
-CycleInfo calculation
-missed-period calculation
-absolute deadline realignment
+等错误层级。
 
-Buffer empty/read/write
-Queue empty/full/wrap-around
+如果现有项目共享统一 `Result/Error` 类型，应优先复用已有统一实现，而不是 realtime 再建立第二套错误系统。
 
-Status
-Stats
-Error native domain
+---
+
+## 3. PeriodicTask
+
+### 3.1 定位
+
+`PeriodicTask` 是 realtime 模块提供的周期执行工具。
+
+它负责：
+
+```text
+worker thread lifecycle
+scheduler setup
+affinity setup
+absolute periodic wait
+cycle information
+deadline miss handling
+basic runtime stats
+```
+
+它不是：
+
+```text
+general-purpose Thread
+Executor
+Runtime
+Task scheduler
+```
+
+用户也可以完全不用 `PeriodicTask`，直接：
+
+```cpp
+std::thread worker([] {
+    realtime::set_scheduler(
+        realtime::Scheduler::Fifo,
+        80);
+
+    realtime::set_affinity(3);
+
+    run();
+});
 ```
 
 ---
 
-### 5.9 Concurrency Tests
+### 3.2 Options
 
-Buffer：
+```cpp
+class PeriodicTask {
+public:
+    struct Options {
+        Duration period{};
 
-```text
-single writer
-single reader
-millions / hundreds of millions operations
-sequence verification
-payload checksum
-slot reuse stress
-torn-read detection
+        Scheduler scheduler{Scheduler::Other};
+        int priority{0};
+
+        std::optional<int> cpu;
+
+        bool required{true};
+    };
+
+    ...
+};
 ```
 
-Queue：
+这里只有 `PeriodicTask` 使用 `Options`。
+
+不建立 namespace-level：
 
 ```text
-wrap-around
-full/empty transition
-sequence continuity
-producer/consumer speed imbalance
+PeriodicTaskOptions
+SchedulerConfig
+AffinityConfig
+RealtimeMode
 ```
 
-构建：
-
-```text
--O0
--O2
--O3
-```
-
-并使用：
-
-```text
-ThreadSanitizer
-AddressSanitizer
-UndefinedBehaviorSanitizer
-```
-
-其中：
-
-> TSan 可以发现实际 data race，但不能替代 C++ memory-model correctness proof。
-
-Sanitizer 测试与 realtime latency benchmark 必须分开，因为 sanitizer 会显著改变时间行为。
+等额外公共类型。
 
 ---
 
-### 5.10 PREEMPT_RT Validation
+### 3.3 默认配置
+
+默认配置必须合法。
+
+默认：
+
+```text
+Scheduler::Other
+priority = 0
+cpu = nullopt
+required = true
+```
+
+因此：
+
+```cpp
+realtime::PeriodicTask task({
+    .period = 2ms,
+});
+```
+
+必须能够在普通 Linux 环境启动。
+
+禁止出现：
+
+```text
+默认 Fifo
++
+priority = 0
+```
+
+这种默认构造即非法的组合。
+
+---
+
+### 3.4 required
+
+```cpp
+bool required{true};
+```
+
+只控制 realtime thread setup 的失败策略。
+
+#### required == true
+
+如果：
+
+```text
+scheduler setup failed
+affinity setup failed
+```
+
+则：
+
+```text
+start() fails
+worker does not enter periodic loop
+```
+
+#### required == false
+
+如果 scheduler 或 affinity 配置失败：
+
+```text
+record failure internally as needed
+continue with available thread configuration
+```
+
+即：
+
+> best-effort realtime setup。
+
+V1 不再额外创建：
+
+```text
+RealtimeMode
+FallbackPolicy
+SetupPolicy
+```
+
+具名字段：
+
+```cpp
+.required = false
+```
+
+已经足够明确。
+
+---
+
+### 3.5 API
+
+推荐：
+
+```cpp
+class PeriodicTask {
+public:
+    struct Options {
+        Duration period{};
+        Scheduler scheduler{Scheduler::Other};
+        int priority{0};
+        std::optional<int> cpu;
+        bool required{true};
+    };
+
+    explicit PeriodicTask(Options options);
+    ~PeriodicTask();
+
+    PeriodicTask(const PeriodicTask&) = delete;
+    PeriodicTask& operator=(const PeriodicTask&) = delete;
+
+    Result<void> start(Callback callback);
+    Result<void> stop();
+
+    bool running() const noexcept;
+    Stats stats() const noexcept;
+};
+```
+
+具体 callback storage 可以通过 template wrapper 实现，但 public semantics 必须保持简单。
+
+---
+
+### 3.6 Callback Contract
+
+逻辑 callback 签名：
+
+```cpp
+void(const CycleInfo&) noexcept
+```
+
+例如：
+
+```cpp
+task.start(
+    [](const realtime::CycleInfo& cycle) noexcept {
+        update();
+    });
+```
+
+compile-time 应尽量保证 callback：
+
+```text
+invocable
+returns void
+noexcept
+```
+
+Callback 在 realtime worker 上执行。
+
+调用者必须保证 callback：
+
+```text
+MUST NOT:
+    throw
+    perform unbounded work
+
+SHOULD NOT:
+    allocate
+    perform blocking filesystem/network I/O
+    lock ordinary contended mutexes
+    log synchronously
+```
+
+模块不尝试自动检测所有 realtime violation。
+
+---
+
+### 3.7 Callback storage
+
+如果实现使用：
+
+```cpp
+std::function<void(const CycleInfo&)>
+```
+
+允许在：
+
+```text
+start() non-RT setup phase
+```
+
+产生一次动态分配。
+
+但必须保证：
+
+> worker 正式进入 realtime periodic loop 后，不再因为 callback dispatch 产生动态分配。
+
+V1 不为了消灭一次启动期 allocation 引入复杂 type-erasure framework。
+
+如果未来 benchmark 证明 callback storage 是明确问题，再优化。
+
+---
+
+### 3.8 Startup
+
+worker 推荐执行：
+
+```text
+create thread
+    ↓
+apply scheduler
+    ↓
+apply affinity
+    ↓
+report startup result
+    ↓
+enter periodic loop
+```
+
+`PeriodicTask` 必须复用：
+
+```cpp
+set_scheduler()
+set_affinity()
+```
+
+不得在 `periodic_task.cpp` 再维护第二套 scheduler/affinity syscall 逻辑。
+
+---
+
+### 3.9 周期调度
+
+周期等待必须使用：
+
+```text
+CLOCK_MONOTONIC
+TIMER_ABSTIME
+```
+
+等价 absolute wait。
+
+禁止使用：
+
+```cpp
+sleep_for(period);
+```
+
+作为主周期实现。
+
+原因：
+
+relative sleep 会形成累计漂移：
+
+```text
+callback execution
++
+relative sleep
++
+callback execution
++
+relative sleep
+```
+
+而 absolute deadline 维持：
+
+```text
+t0
+t0 + period
+t0 + 2 * period
+t0 + 3 * period
+...
+```
+
+---
+
+### 3.10 CycleInfo
+
+```cpp
+struct CycleInfo {
+    std::uint64_t sequence{0};
+
+    TimePoint scheduled_time{};
+    TimePoint wakeup_time{};
+
+    Duration lateness{};
+
+    std::uint32_t missed_periods{0};
+};
+```
+
+含义：
+
+#### sequence
+
+当前实际执行 callback 的 sequence。
+
+#### scheduled_time
+
+本周期理论 absolute deadline。
+
+#### wakeup_time
+
+周期等待结束后的实际 monotonic 时间。
+
+#### lateness
+
+定义：
+
+```text
+max(wakeup_time - scheduled_time, 0)
+```
+
+如果实现允许 early wakeup，则不得将负值伪装成 lateness。
+
+#### missed_periods
+
+由于过晚唤醒或前一 callback overrun 而跳过的完整周期数量。
+
+---
+
+### 3.11 Deadline miss 与 overrun
+
+如果：
+
+```text
+wakeup_time > scheduled_time
+```
+
+即存在 lateness。
+
+是否计入：
+
+```text
+deadline_misses
+```
+
+必须使用固定、一致的定义。
+
+推荐：
+
+> `lateness > 0` 时记录一次 wakeup deadline miss。
+
+如果执行时间导致跨过一个或多个后续周期：
+
+```text
+missed_periods > 0
+```
+
+必须记录实际跳过的周期数量。
+
+---
+
+### 3.12 Skip，不 catch-up
+
+如果任务已经落后多个周期：
+
+```text
+scheduled:
+    2ms
+    4ms
+    6ms
+    8ms
+
+worker wakes:
+    7ms
+```
+
+不得：
+
+```text
+立刻执行 4ms callback
+立刻执行 6ms callback
+然后执行 8ms
+```
+
+形成 burst catch-up。
+
+应跳到：
+
+```text
+下一个未来 absolute deadline
+```
 
 目标：
 
 ```text
-500 Hz
-period = 2 ms
+bounded recovery
+no callback burst
+no historical-cycle replay
 ```
 
-测量：
-
-```text
-wakeup lateness
-callback execution duration
-deadline misses
-missed periods
-stop latency
-```
-
-建议：
-
-```text
-1 h development soak
-24 h release soak
-```
-
-并施加：
-
-```text
-CPU stress
-memory pressure
-disk I/O
-network load
-background tasks
-logging load
-```
-
-工具：
-
-```text
-cyclictest
-trace-cmd
-ftrace
-perf sched
-```
+这是 PeriodicTask 的核心 invariant。
 
 ---
 
-### 5.11 性能目标
+### 3.13 stop()
 
-早期工程参考：
+`stop()` 是 cooperative shutdown。
 
-```text
-period:
-    2 ms
-
-deadline misses:
-    0 under validated workload
-
-p99 wakeup lateness:
-    < 100 us
-
-max callback execution:
-    < 1 ms
-```
-
-这些是项目初期 target，不是公共 API guarantee。
-
-最终指标由：
+典型实现：
 
 ```text
-CPU
-kernel
-PREEMPT_RT version
-CPU isolation
-IRQ load
-application workload
+set stop_requested
+    ↓
+wait worker exit
 ```
 
-实测确定。
+如果 worker 正在：
+
+```text
+clock_nanosleep()
+```
+
+V1 允许：
+
+> worker 在当前等待 deadline 到达后观察 stop request 并退出。
+
+因此 `stop()` 不保证立即唤醒 sleeping worker。
+
+V1 不为了这一点增加：
+
+```text
+eventfd
+signal interruption
+condition variable
+timerfd abstraction
+```
+
+对于典型毫秒级周期，该行为可以接受。
+
+如果未来真实出现长周期 task，再设计 interruptible stop。
 
 ---
 
-### 5.12 CI
+### 3.14 running()
 
-至少提供：
-
-```text
-Normal Build
-Unit Tests
-
-Realtime no-exceptions Build
-
-ASan / UBSan
-
-TSan / concurrency stress
-
-PREEMPT_RT validation
-    独立硬件/环境执行
-```
-
-`-fno-exceptions` 只作用于：
+不提供泛化：
 
 ```text
-RoboHardware::Realtime
-```
-
-独立 CI profile。
-
-禁止全局：
-
-```cmake
-add_compile_options(-fno-exceptions)
-```
-
-影响其他 target。
-
-正常 build 不要求关闭异常。
-
-该 profile 的目标只是验证：
-
-> realtime 模块内部不依赖 throw/catch 机制。
-
----
-
-## 6. V1 范围、参考实现与架构不变量
-
-### V1 MUST
-
-必须实现：
-
-```text
-CLOCK_MONOTONIC-backed chrono-compatible Clock
-
-SCHED_FIFO
-SCHED_OTHER
-
-CPU affinity
-
-Memory lock
-
-RealtimeMode
-    Required
-    BestEffort
-
-PeriodicTask
-
-absolute deadline
-
-CycleInfo
-
-explicit lateness/missed-period semantics
-
-skip missed periods
-
-cooperative synchronous stop
-
-SPSC Buffer<T>
-    fixed multi-slot
-    latest-value
-    initially empty
-    explicit slot ownership
-
-SPSC Queue<T,N>
-    bounded
-    fixed capacity
-
 Status
-Stats
-
-ErrorCode
-NativeErrorDomain
-Error
-
-unit tests
-concurrency tests
-basic benchmark
+TaskStatus
+RuntimeStatus
 ```
 
-### SHOULD
+仅提供：
 
-建议实现：
-
-```text
-memory prefault helper
-
-CycleSample trace support
-
-PREEMPT_RT automated soak
-
-additional runtime diagnostics
+```cpp
+bool running() const noexcept;
 ```
 
-### MAY
+回答：
 
-后续按真实需求增加：
+> worker 当前是否处于 active lifecycle。
 
-```text
-SCHED_RR
-SCHED_DEADLINE
+配置本身不需要通过 Status 再回显。
 
-generic realtime::Thread
+---
 
-MPSC / MPMC Queue
+### 3.15 Stats
 
-NUMA awareness
+```cpp
+struct Stats {
+    std::uint64_t cycles{0};
 
-shared-memory exchange
+    std::uint64_t deadline_misses{0};
+    std::uint64_t missed_periods{0};
 
-advanced tracing
-
-CPU isolation helper
-
-kernel tuning helper
-
-realtime allocator
+    Duration max_lateness{};
+    Duration max_execution{};
+};
 ```
 
-未来如果增加：
+字段语义：
 
 ```text
-realtime::Thread
+cycles
+    callback 实际执行次数
+
+deadline_misses
+    callback 周期唤醒发生 deadline miss 的次数
+
+missed_periods
+    因 overrun / late wakeup 实际跳过的周期总数
+
+max_lateness
+    observed worst wakeup lateness
+
+max_execution
+    observed worst callback execution duration
 ```
 
-必须复用现有：
+V1 不在 runtime Stats 中加入：
 
 ```text
-SchedulerConfig
-AffinityConfig
-MemoryConfig
-RealtimeMode
-Status
-Error
+mean
+variance
+p95
+p99
+p99.9
+histogram
 ```
 
-不得重新设计第二套线程运行语义。
+这些属于 benchmark。
 
-明确不提前建设：
+---
+
+### 3.16 Stats 并发
+
+`stats()` 必须：
 
 ```text
-Generic Executor
-Task Graph
-Message Bus
-Coroutine Runtime
-Realtime Framework
-Scheduler Framework
-Realtime Application Framework
+non-blocking
+```
+
+并且不得为了 snapshot 完全事务一致性给 realtime loop 增加普通 mutex。
+
+允许：
+
+```text
+atomics
+careful snapshot
+slightly non-transactional diagnostics
+```
+
+实时执行路径优先。
+
+---
+
+## 4. RT 数据交换
+
+### 4.1 总体模型
+
+V1 提供两个不同的数据交换 primitive：
+
+```text
+Value
+    只关心最近状态
+
+Queue
+    每一个中间项都有意义
+```
+
+两者不是重复能力。
+
+典型：
+
+```cpp
+realtime::Value<State> state;
+realtime::Queue<Command, 64> commands;
+```
+
+---
+
+### 4.2 Value
+
+公共类型：
+
+```cpp
+template <typename T>
+class Value {
+public:
+    void write(
+        const T& value) noexcept;
+
+    bool read(
+        T& value) const noexcept;
+};
+```
+
+它表示：
+
+> producer 发布一个值，consumer 获取最近完整发布的值；旧值允许被新值覆盖。
+
+例如：
+
+```text
+writer:
+    A → B → C → D
+
+reader:
+    可以直接得到 D
+```
+
+reader 不要求消费：
+
+```text
+A
+B
+C
+```
+
+---
+
+### 4.3 Value 并发 Contract
+
+V1 必须明确真实实现支持的 ownership。
+
+如果当前算法是：
+
+```text
+single writer
+single reader
+```
+
+则 header 必须明确写：
+
+```text
+Exactly one writer and one reader are supported.
+```
+
+不得因为类名是：
+
+```cpp
+Value<T>
+```
+
+就暗示任意线程安全。
+
+`Value` 的名称保持简单，复杂并发保证通过 contract 表达。
+
+---
+
+### 4.4 Value Runtime Requirements
+
+`write()` / `read()`：
+
+```text
+MUST:
+    non-blocking
+    allocation-free after construction
+    noexcept
+```
+
+不得依赖：
+
+```text
+ordinary blocking mutex
+condition variable
+dynamic allocation
+```
+
+如果 `T` 本身不能满足所需操作约束，则应通过：
+
+```text
+static_assert
+documented type requirement
+```
+
+明确限制。
+
+不得静默提供错误的 realtime guarantee。
+
+---
+
+### 4.5 Queue
+
+公共类型：
+
+```cpp
+template <typename T, std::size_t Capacity>
+class Queue {
+public:
+    bool try_push(
+        const T& value) noexcept;
+
+    bool try_pop(
+        T& value) noexcept;
+};
+```
+
+名称保留：
+
+```cpp
+realtime::Queue<T, N>
+```
+
+而不是：
+
+```text
+SpscQueue
+LockFreeQueue
+RealtimeQueue
+BoundedQueue
+```
+
+因为 namespace 已表达 realtime context。
+
+SPSC / fixed capacity 等属于 contract。
+
+---
+
+### 4.6 Queue Contract
+
+V1 Queue：
+
+```text
+fixed capacity
+single producer
+single consumer
+FIFO
+non-blocking
+allocation-free after construction
+```
+
+因此：
+
+```text
+one producer
+one consumer
+```
+
+必须在 public header 明确。
+
+Queue 满：
+
+```cpp
+try_push() == false
+```
+
+Queue 空：
+
+```cpp
+try_pop() == false
+```
+
+不得：
+
+```text
+block
+sleep
+allocate
+grow dynamically
+```
+
+---
+
+### 4.7 Queue 不提供 STL 容器接口
+
+V1 不增加：
+
+```text
+push_wait
+pop_wait
+front
+back
+resize
+iterator
+
+dynamic capacity
+
+MPSC
+MPMC
+```
+
+它不是 STL queue replacement。
+
+如果未来确有新的并发 topology，应新增明确 primitive 或重新设计，而不是逐渐让 `Queue` 承担所有并发模型。
+
+---
+
+### 4.8 Value 与 Queue 的选择
+
+使用 `Value`：
+
+```text
+joint state
+sensor snapshot
+target state
+configuration snapshot
+latest command
+```
+
+特点：
+
+> 只关心最新数据。
+
+使用 `Queue`：
+
+```text
+events
+discrete commands
+transactions
+messages that must preserve ordering
+```
+
+特点：
+
+> 中间数据不能被覆盖。
+
+---
+
+## 5. 实现约束
+
+### 5.1 推荐目录
+
+```text
+include/realtime/
+├── affinity.hpp
+├── clock.hpp
+├── error.hpp
+├── memory.hpp
+├── periodic_task.hpp
+├── queue.hpp
+├── scheduler.hpp
+└── value.hpp
+
+src/realtime/
+├── affinity.cpp
+├── clock.cpp
+├── memory.cpp
+├── periodic_task.cpp
+└── scheduler.cpp
+
+tests/realtime/
+├── affinity_test.cpp
+├── clock_test.cpp
+├── memory_test.cpp
+├── periodic_task_test.cpp
+├── queue_test.cpp
+├── scheduler_test.cpp
+└── value_test.cpp
+
+benchmarks/
+└── realtime_benchmark.cpp
+```
+
+保持扁平结构。
+
+不增加：
+
+```text
+detail/
+internal/
+platform/
+runtime/
+thread/
+backend/
+manager/
+```
+
+少量 internal helper 放：
+
+```cpp
+namespace {
+...
+}
+```
+
+即可。
+
+---
+
+### 5.2 Public API 基线
+
+V1 public API 应接近：
+
+```cpp
+namespace realtime {
+
+using Duration = std::chrono::nanoseconds;
+
+using TimePoint =
+    std::chrono::time_point<
+        std::chrono::steady_clock,
+        Duration>;
+
+class Clock {
+public:
+    static TimePoint now() noexcept;
+};
+
+
+enum class Scheduler : std::uint8_t {
+    Other,
+    Fifo,
+};
+
+Result<void> set_scheduler(
+    Scheduler scheduler,
+    int priority = 0) noexcept;
+
+Result<void> set_affinity(
+    int cpu) noexcept;
+
+Result<void> lock_memory() noexcept;
+
+
+struct CycleInfo {
+    std::uint64_t sequence{0};
+
+    TimePoint scheduled_time{};
+    TimePoint wakeup_time{};
+
+    Duration lateness{};
+    std::uint32_t missed_periods{0};
+};
+
+
+struct Stats {
+    std::uint64_t cycles{0};
+
+    std::uint64_t deadline_misses{0};
+    std::uint64_t missed_periods{0};
+
+    Duration max_lateness{};
+    Duration max_execution{};
+};
+
+
+class PeriodicTask {
+public:
+    struct Options {
+        Duration period{};
+
+        Scheduler scheduler{Scheduler::Other};
+        int priority{0};
+
+        std::optional<int> cpu;
+
+        bool required{true};
+    };
+
+    explicit PeriodicTask(
+        Options options);
+
+    ~PeriodicTask();
+
+    PeriodicTask(
+        const PeriodicTask&) = delete;
+
+    PeriodicTask& operator=(
+        const PeriodicTask&) = delete;
+
+    Result<void> stop();
+
+    bool running() const noexcept;
+
+    Stats stats() const noexcept;
+
+    // start() may be a constrained template.
+};
+
+
+template <typename T>
+class Value {
+public:
+    void write(
+        const T& value) noexcept;
+
+    bool read(
+        T& value) const noexcept;
+};
+
+
+template <typename T, std::size_t Capacity>
+class Queue {
+public:
+    bool try_push(
+        const T& value) noexcept;
+
+    bool try_pop(
+        T& value) noexcept;
+};
+
+}  // namespace realtime
+```
+
+新增 public API 前必须证明：
+
+> V1 已存在真实 caller 或明确正确性需求。
+
+---
+
+### 5.3 PeriodicTask 内部结构
+
+`periodic_task.cpp` 应让核心执行流程非常清晰。
+
+推荐组织：
+
+```cpp
+namespace {
+
+Result<void> validate(
+    const PeriodicTask::Options&) noexcept;
+
+Result<void> apply_scheduler(
+    const PeriodicTask::Options&) noexcept;
+
+Result<void> apply_affinity(
+    const PeriodicTask::Options&) noexcept;
+
+void run_loop(
+    PeriodicTask::Impl&) noexcept;
+
+void update_stats(
+    PeriodicTask::Impl&,
+    const CycleInfo&,
+    Duration execution) noexcept;
+
+}
+```
+
+其中：
+
+```cpp
+apply_scheduler()
+```
+
+必须调用公共或共享实现：
+
+```cpp
+set_scheduler()
+```
+
+而不是重新写：
+
+```text
+pthread_setschedparam()
+```
+
+逻辑。
+
+Affinity 同理。
+
+---
+
+### 5.4 Production Code 不允许 TestHooks
+
+必须删除：
+
+```text
+TestHooks
+test_hooks
+forced errno
+fake syscall return
+
+#ifdef UNIT_TEST
+```
+
+等生产运行路径测试注入。
+
+尤其禁止出现在：
+
+```text
+clock_nanosleep path
+scheduler path
+affinity path
+memory path
 ```
 
 原则：
 
-> Define the boundary now. Implement the mechanism only when a real requirement appears.
+> production code 只描述 production behavior。
+
+对于 Linux syscall 行为，优先使用真实 integration test。
 
 ---
 
-### 参考实现
+### 5.5 Hot-path 约束
 
-#### cactus-rt
-
-参考：
+正式 realtime worker loop 启动后：
 
 ```text
-thread scheduling
-SCHED_FIFO
-affinity
-memory locking
-periodic execution
-statistics
+MUST NOT intentionally:
+    allocate heap
+    resize dynamic container
+    create string
+    create thread
+    perform hidden retry
+    sleep outside explicit periodic wait
+    throw
 ```
 
-不复制大型 runtime/application framework。
-
-#### realtime_tools
-
-参考：
+同时：
 
 ```text
-RT/non-RT exchange
-latest-value semantics
-mature realtime buffer ideas
+Value::read/write
+Queue::try_push/try_pop
 ```
 
-重点参考并发 ownership，而不是机械复制其 API 或具体实现。
+必须满足各自 bounded/non-blocking contract。
 
-#### ros2-realtime-examples
+---
 
-参考：
+### 5.6 注释规范
+
+Public API 必须记录：
 
 ```text
-Linux RT configuration
-permissions
-mlockall
-PREEMPT_RT deployment
+thread scope
+process scope
+ownership
+blocking semantics
+allocation semantics
+error semantics
+clock domain
 ```
 
-不引入 ROS2 dependency。
+例如：
 
-#### Linux / C++17
+```cpp
+/// Sets the scheduling policy of the calling thread.
+///
+/// `Scheduler::Fifo` requires a valid FIFO priority and
+/// may require elevated scheduling privileges.
+Result<void> set_scheduler(
+    Scheduler scheduler,
+    int priority = 0) noexcept;
+```
 
-最终行为依据：
+```cpp
+/// Pins the calling thread to one CPU.
+Result<void> set_affinity(
+    int cpu) noexcept;
+```
 
-```text
-Linux scheduler semantics
-CLOCK_MONOTONIC
-pthread API
-C++17 memory model
+```cpp
+/// Fixed-capacity realtime queue.
+///
+/// Exactly one producer and one consumer are supported.
+/// Push and pop are non-blocking and allocation-free.
+template <typename T, std::size_t Capacity>
+class Queue;
+```
+
+避免无信息量注释：
+
+```cpp
+/// Returns stats.
+Stats stats() const noexcept;
 ```
 
 ---
 
-### 架构不变量
+### 5.7 明确不实现
 
-Realtime 长期必须满足：
-
-1. `realtime` 不依赖 System、Device、CAN、Serial、CANopen、ROS2。
-2. V1 为 Linux-only。
-3. `Clock` 明确基于 `CLOCK_MONOTONIC`。
-4. `Clock` 对外兼容 `std::chrono`。
-5. 所有 RT 时间属于同一 monotonic time domain。
-6. PeriodicTask 使用 absolute deadline。
-7. 不使用 relative `sleep_for(period)` 实现周期。
-8. `lateness = max(wakeup - scheduled, 0)`。
-9. `missed_periods = floor(lateness / period)`。
-10. Overrun 跳过已错过周期。
-11. 禁止 catch-up storm。
-12. Realtime 只报告 overrun，不决定机器人 Safety。
-13. callback 必须 bounded。
-14. 不异步抢占正在执行 callback。
-15. stop 使用 cooperative shutdown。
-16. V1 `stop()` 返回时 worker 已退出。
-17. callback 依赖资源必须至少存活到 worker join。
-18. Buffer 为 SPSC latest-value primitive。
-19. Buffer 初始为空。
-20. `read()==false` 表示尚无任何 publish。
-21. Buffer 不负责 freshness/timeout。
-22. Buffer 使用固定预分配多槽。
-23. Buffer publication 使用 release/acquire。
-24. Buffer 必须额外解决 slot ownership。
-25. 禁止 naive double-buffer reuse race。
-26. Buffer 并发正确性必须符合 C++17 memory model。
-27. 不用 `atomic_signal_fence` 替代跨线程同步。
-28. 不假设任意 `std::atomic<T>` lock-free。
-29. Buffer 不设置 cache-line 大小硬限制。
-30. 大对象优化以 benchmark 为依据。
-31. Queue V1 为 SPSC。
-32. 一个 Queue 的 producer/consumer ownership 在 Runtime 中固定。
-33. 多 producer 使用多个 Queue 或由上层序列化。
-34. Queue 不阻塞、不扩容。
-35. RT path 不动态分配。
-36. RT path 不进入不可预测 blocking mutex。
-37. RT path 不做文件、网络或格式化同步日志。
-38. RT path 不使用 exception 作为正常控制流。
-39. Required 初始化失败必须失败。
-40. BestEffort 的降级必须通过 Status 可见。
-41. Error 必须区分 `errno` 与 pthread 返回码来源。
-42. Status 表示当前 runtime 能力。
-43. Stats 表示长期聚合数据。
-44. 高频 trace 通过 bounded RT → non-RT 通道输出。
-45. 普通 Linux 仅验证功能。
-46. PREEMPT_RT 用于正式 realtime 性能验证。
-47. Sanitizer 测试与性能测试分离。
-48. `-fno-exceptions` 只用于 Realtime target 的独立 CI profile。
-49. V1 不提前设计 SCHED_RR / SCHED_DEADLINE 的复杂配置。
-50. 未来 `realtime::Thread` 必须复用已有调度、亲和性、内存、状态和错误语义。
-51. 模块保持 realtime primitive library 定位。
-
-最终核心模型：
+V1 不增加：
 
 ```text
-                   System / Device
-                         │
-                         ▼
-                   PeriodicTask
-                         │
-        ┌────────────────┼────────────────┐
-        ▼                ▼                ▼
-      Clock          Scheduling         Status/Stats
-                         │
-                 Affinity / Memory
-                         │
-                         ▼
-                    Linux Thread
+Thread
+RealtimeThread
+CyclicThread
 
+App
+Runtime
+Executor
 
-                  Data Exchange
-                         │
-              ┌──────────┴──────────┐
-              ▼                     ▼
-          Buffer<T>             Queue<T,N>
-        SPSC latest            SPSC ordered
-           value                 events
+ThreadPool
+
+SchedulerConfig
+AffinityConfig
+MemoryConfig
+
+RealtimeMode
+
+Status
+
+CpuSet
+CpuMask
+CpuManager
+
+RealtimeMutex
+
+SCHED_RR
+SCHED_DEADLINE
+
+logger
+tracing
+metrics
+
+platform abstraction
+mock syscall interface
 ```
 
-Realtime 模块最终目标是：
+---
 
-> **提供一组 Linux-only、chrono-compatible、并发语义明确、可验证、可独立复用，并足以稳定支撑 RoboHardware 500 Hz 实时控制的数据与执行基础 primitive。**
+## 6. 测试与验收
 
-**Realtime V1 的架构与公共语义至此冻结。后续修改应由实现结果、benchmark 或明确的上层需求驱动，而不是基于推测性的未来扩展。**
+测试分为：
+
+```text
+Unit
+Linux Integration
+Concurrency
+Realtime Benchmark
+```
+
+---
+
+### 6.1 Unit Tests
+
+#### Clock
+
+验证：
+
+```text
+Clock::now() monotonic progression
+Duration / TimePoint arithmetic
+```
+
+不要依赖 wall clock。
+
+---
+
+#### Scheduler
+
+验证：
+
+```text
+Scheduler::Other + priority 0
+invalid Other priority
+
+FIFO min priority
+FIFO max priority
+invalid FIFO low/high priority
+```
+
+纯参数验证不需要 root 权限。
+
+---
+
+#### Affinity
+
+验证：
+
+```text
+negative cpu
+valid allowed CPU
+```
+
+真实 affinity 行为放 integration test。
+
+---
+
+#### PeriodicTask
+
+覆盖：
+
+```text
+period == 0 rejected
+negative/invalid period rejected where applicable
+
+start
+stop
+
+double start rejected
+
+stop before start
+
+callback sequence
+
+scheduled_time progression
+
+wakeup / lateness semantics
+
+deadline miss
+
+missed-period skip
+
+no burst catch-up
+
+running()
+
+stats()
+```
+
+Missed-period calculation 应尽量抽成 deterministic pure logic 进行测试，而不是依赖测试机真的 sleep miss。
+
+---
+
+#### Value
+
+覆盖：
+
+```text
+initial state semantics
+
+write
+read
+
+multiple sequential writes
+latest value
+
+large update count
+```
+
+同时验证真实 ownership contract。
+
+---
+
+#### Queue
+
+覆盖：
+
+```text
+initially empty
+
+FIFO ordering
+
+full
+empty
+
+wrap-around
+
+capacity boundary
+
+large push/pop sequence
+```
+
+---
+
+### 6.2 Linux Integration Tests
+
+#### Scheduler
+
+真实调用：
+
+```cpp
+set_scheduler(
+    Scheduler::Other,
+    0);
+```
+
+必须可验证。
+
+FIFO：
+
+```text
+成功
+    → 验证当前 policy / priority
+
+EPERM
+    → GTEST_SKIP()
+```
+
+权限不足不是 library failure。
+
+---
+
+#### Affinity
+
+步骤：
+
+```text
+sched_getaffinity()
+    ↓
+选择当前 allowed CPU
+    ↓
+set_affinity(cpu)
+    ↓
+pthread_getaffinity_np() / equivalent
+    ↓
+验证
+```
+
+不得假设：
+
+```text
+CPU 0
+```
+
+一定可用，因为容器、cpuset、systemd 等可能限制 CPU set。
+
+---
+
+#### Memory
+
+真实调用：
+
+```cpp
+lock_memory();
+```
+
+如果：
+
+```text
+EPERM
+ENOMEM
+RLIMIT_MEMLOCK limitation
+```
+
+来自测试环境：
+
+```text
+根据环境条件 skip
+```
+
+不要 fake `mlockall()`。
+
+---
+
+#### PeriodicTask
+
+至少验证：
+
+```text
+Scheduler::Other periodic execution
+
+valid affinity
+
+FIFO where permitted
+
+start/stop lifecycle
+
+multiple cycles
+```
+
+---
+
+### 6.3 Concurrency Tests
+
+#### Value
+
+如果 contract 为 single writer / single reader：
+
+```text
+one writer thread
+one reader thread
+100k+ / 1M updates
+
+no torn values
+no invalid state
+eventual progress
+```
+
+测试数据结构应设计成能够检测 partial/torn read。
+
+---
+
+#### Queue
+
+```text
+producer:
+    0 ... N
+
+consumer:
+    0 ... N
+```
+
+必须验证：
+
+```text
+ordering
+no duplication
+no corruption
+no unexpected loss
+```
+
+Queue 满时发生：
+
+```text
+try_push() == false
+```
+
+属于正常 API behavior，不应被测试误认为 corruption。
+
+---
+
+### 6.4 Sanitizers
+
+CI 建议：
+
+```text
+TSAN:
+    Value
+    Queue
+    non-RT concurrency tests
+
+ASAN:
+    lifecycle and container tests
+
+UBSAN:
+    general unit tests
+```
+
+不要使用 sanitizer benchmark 数据评价 realtime latency。
+
+Sanitizer 只用于 correctness。
+
+---
+
+### 6.5 Realtime Benchmark
+
+至少测试：
+
+```text
+500 Hz
+1000 Hz
+```
+
+场景：
+
+```text
+Scheduler::Other
+
+Scheduler::Fifo
+    where permitted
+
+without affinity
+
+with affinity
+```
+
+建议记录：
+
+```text
+cycles
+
+deadline misses
+missed periods
+
+min / mean / p99 / p99.9 / max lateness
+
+min / mean / p99 / max callback execution
+
+CPU usage
+
+major/minor page faults where meaningful
+```
+
+其中高级统计只属于 benchmark。
+
+Runtime `Stats` 仍只保留：
+
+```text
+cycles
+deadline_misses
+missed_periods
+max_lateness
+max_execution
+```
+
+---
+
+### 6.6 Benchmark 环境
+
+Benchmark 报告必须记录关键环境：
+
+```text
+kernel version
+PREEMPT_RT or generic kernel
+CPU model
+CPU frequency policy
+scheduler
+priority
+affinity CPU
+memory lock status
+system load
+```
+
+否则不同运行结果无法比较。
+
+---
+
+### 6.7 真实 RT 环境
+
+V1 应至少在：
+
+```text
+普通 Linux kernel
+```
+
+完成功能验证。
+
+如果目标产品使用：
+
+```text
+PREEMPT_RT
+```
+
+则冻结前应增加目标 kernel benchmark。
+
+Benchmark 不要求 realtime 模块：
+
+> 在任何 Linux 主机上都自动达到 hard realtime。
+
+目标是：
+
+> realtime 模块本身不成为明显的软件抖动来源，并正确暴露 Linux realtime primitives。
+
+---
+
+### 6.8 V1 完成条件
+
+只有同时满足以下条件，Realtime V1 才可以冻结。
+
+#### API
+
+* Scheduler / affinity / memory 可以独立使用；
+* `PeriodicTask` 不成为 runtime framework；
+* 无不必要 `Config` 类型；
+* 默认 PeriodicTask 配置合法；
+* public API 名称简洁；
+* public concurrency contract 明确。
+
+#### Scheduler / Affinity / Memory
+
+* `Scheduler::Other` 正确；
+* `Scheduler::Fifo` priority validation 正确；
+* native scheduling errors 保留；
+* affinity 使用真实 allowed CPU 验证；
+* memory lock 是 process-level API。
+
+#### PeriodicTask
+
+* absolute deadline；
+* monotonic clock；
+* no cumulative relative-sleep drift；
+* overrun skip；
+* no burst catch-up；
+* required / best-effort behavior 正确；
+* start / stop lifecycle 正确；
+* callback noexcept contract；
+* hot path 不主动 allocation。
+
+#### Value / Queue
+
+* ownership contract 与实现一致；
+* non-blocking；
+* runtime allocation-free；
+* concurrency tests 通过；
+* TSAN 无已知 data race。
+
+#### Production quality
+
+* TestHooks 为 0；
+* production test branches 为 0；
+* 无隐藏线程；
+* 无隐藏 retry；
+* 无不必要 internal framework；
+* public API 有有效 contract comments。
+
+#### Validation
+
+* unit tests 通过；
+* Linux integration tests 通过；
+* concurrency tests 通过；
+* 500 Hz benchmark 完成；
+* 1 kHz benchmark 完成；
+* compiler warnings 为零。
+
+---
+
+## 最终边界
+
+模块依赖关系：
+
+```text
+Application / Hardware / Protocol
+              │
+      ┌───────┼────────┐
+      ▼       ▼        ▼
+PeriodicTask Value    Queue
+      │
+ ┌────┼────────┐
+ ▼    ▼        ▼
+Clock Scheduler Affinity
+
+Memory
+    └──── process-level independent utility
+```
+
+`realtime` 与其它基础模块保持独立：
+
+```text
+realtime
+    不依赖 can
+
+can
+    不依赖 realtime
+```
+
+上层可以自由组合：
+
+```cpp
+realtime::lock_memory();
+
+realtime::PeriodicTask task({
+    .period = 2ms,
+    .scheduler = realtime::Scheduler::Fifo,
+    .priority = 80,
+    .cpu = 3,
+});
+
+task.start(
+    [](const realtime::CycleInfo& cycle) noexcept {
+        // realtime work
+    });
+```
+
+也可以只使用独立工具：
+
+```cpp
+std::thread worker([] {
+    realtime::set_scheduler(
+        realtime::Scheduler::Fifo,
+        80);
+
+    realtime::set_affinity(3);
+
+    run();
+});
+```
+
+数据交换保持：
+
+```cpp
+realtime::Value<State> state;
+realtime::Queue<Command, 64> commands;
+```
+
+最终使用者只需要理解：
+
+```text
+Clock
+Scheduler
+set_scheduler
+set_affinity
+lock_memory
+
+PeriodicTask
+CycleInfo
+Stats
+
+Value
+Queue
+```
+
+即可使用整个模块。
+
+如果一个使用者需要理解：
+
+```text
+Runtime
+Manager
+Backend
+Context
+Environment
+Thread hierarchy
+Cpu manager
+```
+
+才能使用 realtime，那么模块已经设计过重。
+
+如果为了减少类型数量又删除：
+
+```text
+Scheduler
+CycleInfo
+Value / Queue semantic distinction
+```
+
+等真正影响实时正确性的领域概念，那么模块又被过度简化。
+
+因此最终原则是：
+
+> **减少无价值抽象，不减少 realtime correctness 所依赖的语义；API 保持短而直接，关键并发、调度和时序 contract 必须在文档中完整定义。**

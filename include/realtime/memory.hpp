@@ -1,10 +1,8 @@
 #pragma once
 
-#include <cstddef>
+#include "realtime/error.hpp"
 
 namespace realtime {
-struct MemoryConfig {
-    bool lock_memory{true};
-    std::size_t prefault_bytes{0};
-};
+/// Locks current and future process memory with mlockall().
+Result<void> lock_memory() noexcept;
 }  // namespace realtime
