@@ -430,51 +430,28 @@ Serial
 
 ```text
 robohardware/
-├── include/
-│   ├── robohardware/
-│   │   ├── system.hpp
-│   │   ├── config.hpp
-│   │   ├── state.hpp
-│   │   ├── status.hpp
-│   │   └── device.hpp
-│   │
-│   ├── realtime/
-│   ├── can/
-│   ├── serial/
-│   ├── canopen/
-│   │   └── cia402/
-│   └── simulation/
-│
-├── src/
-│   ├── system/
-│   ├── realtime/
-│   ├── can/
-│   ├── serial/
-│   ├── canopen/
-│   │   └── cia402/
-│   └── simulation/
-│
-├── apps/
-├── examples/
+├── realtime/
+│   ├── CMakeLists.txt
+│   ├── README.md
+│   ├── *.hpp / *.cpp
+│   ├── tests/
+│   └── benchmarks/
+├── can/
+├── serial/
+├── canopen/
+├── cia402/
+├── system/
+├── simulation/
 ├── tests/
-│   ├── unit/
 │   ├── integration/
-│   ├── realtime/
 │   └── hardware/
-│
-├── config/
-├── tools/
-├── scripts/
-│
 ├── docs/
-│   ├── design.md
-│   ├── realtime.md
-│   ├── can.md
-│   ├── serial.md
-│   └── canopen.md
-│
 └── CMakeLists.txt
 ```
+
+每个模块都是独立工程单元：头文件和源文件直接放在模块根目录，
+并拥有自己的 `CMakeLists.txt`、`README.md`、`tests/` 和 `benchmarks/`。
+顶层 `tests/` 仅保留跨模块 integration / hardware tests。
 
 总体 `design.md` 只描述系统级架构。
 
@@ -1600,4 +1577,3 @@ general controller framework
 RoboHardware 的最终目标是：
 
 > **构建一个克制、清晰、实时可控、支持异构设备、真实/仿真混合运行、运行时拓扑冻结、生命周期安全，并能够自然接入机器人应用与 ROS2/ros2_control 的 Linux C++ 硬件基础架构。**
-

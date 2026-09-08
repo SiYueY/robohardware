@@ -1396,7 +1396,9 @@ messages that must preserve ordering
 ### 5.1 推荐目录
 
 ```text
-include/realtime/
+realtime/
+├── CMakeLists.txt
+├── README.md
 ├── affinity.hpp
 ├── clock.hpp
 ├── error.hpp
@@ -1404,29 +1406,25 @@ include/realtime/
 ├── periodic_task.hpp
 ├── queue.hpp
 ├── scheduler.hpp
-└── value.hpp
-
-src/realtime/
+├── value.hpp
 ├── affinity.cpp
 ├── clock.cpp
 ├── memory.cpp
 ├── periodic_task.cpp
-└── scheduler.cpp
-
-tests/realtime/
-├── affinity_test.cpp
-├── clock_test.cpp
-├── memory_test.cpp
-├── periodic_task_test.cpp
-├── queue_test.cpp
-├── scheduler_test.cpp
-└── value_test.cpp
-
-benchmarks/
-└── realtime_benchmark.cpp
+├── scheduler.cpp
+├── tests/
+│   ├── CMakeLists.txt
+│   ├── realtime_test.cpp
+│   └── concurrency_test.cpp
+└── benchmarks/
+    ├── CMakeLists.txt
+    └── realtime_500hz_benchmark.cpp
 ```
 
 保持扁平结构。
+
+模块仍向 consumer 暴露 `#include <realtime/*.hpp>`；该 include 路径由
+模块 CMake 的 public include directory 保持兼容。
 
 不增加：
 

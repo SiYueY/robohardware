@@ -1502,19 +1502,21 @@ I/O path 简洁性优先。
 ### 5.1 推荐代码结构
 
 ```text
-include/can/
+can/
+├── CMakeLists.txt
+├── README.md
 ├── error.hpp
 ├── event.hpp
 ├── filter.hpp
 ├── frame.hpp
 ├── interface.hpp
 ├── socket.hpp
-└── timestamp.hpp
-
-src/can/
+├── timestamp.hpp
 ├── event.cpp
 ├── socket.cpp
-└── timestamp.cpp
+├── timestamp.cpp
+├── tests/
+└── benchmarks/
 ```
 
 保持扁平。

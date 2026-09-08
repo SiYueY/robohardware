@@ -129,7 +129,9 @@ ros2_canopen
 推荐目录：
 
 ```text
-include/canopen/
+canopen/
+├── CMakeLists.txt
+├── README.md
 ├── network.hpp
 ├── node.hpp
 ├── object_dictionary.hpp
@@ -145,14 +147,6 @@ include/canopen/
 ├── status.hpp
 ├── statistics.hpp
 ├── error.hpp
-└── cia402/
-    ├── state.hpp
-    ├── master.hpp
-    ├── slave.hpp
-    ├── process_data.hpp
-    └── status.hpp
-
-src/canopen/
 ├── network.cpp
 ├── node.cpp
 ├── object_dictionary.cpp
@@ -168,11 +162,11 @@ src/canopen/
 ├── status.cpp
 ├── statistics.cpp
 ├── error.cpp
-└── cia402/
-    ├── master.cpp
-    ├── slave.cpp
-    └── status.cpp
+├── tests/
+└── benchmarks/
 ```
+
+CiA402 是独立顶层模块 `cia402/`，不作为 `canopen/` 的目录子层级。
 
 V1 不增加：
 
