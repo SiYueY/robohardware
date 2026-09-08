@@ -1,236 +1,180 @@
 # RoboHardware CAN 模块设计
 
-## 1. 模块定位与设计原则
+## 1. 定位与边界
 
-`can` 是 RoboHardware 中面向 Linux SocketCAN 的通用 C++17 CAN 基础模块。
+### 1.1 模块定位
 
-它提供：
+`can` 是面向 Linux SocketCAN 的通用 C++17 CAN 基础工具模块。
 
-```text
-CAN Frame
-CAN Interface
-SocketCAN backend
-Filter
-Non-blocking RX / TX
-RX Timestamp
-Bus Event
-Bus State
-Status / Stats
-Error
-```
+它负责提供：
 
-它不负责：
+* Classic CAN Frame；
+* CAN Filter；
+* Linux SocketCAN Socket；
+* non-blocking RX / TX；
+* RX 时间信息；
+* CAN Error Frame 解码；
+* Bus Event 与 Bus State；
+* 基础运行统计；
+* 结构化错误；
+* 面向上层协议的最小 CAN Interface。
+
+典型用途包括：
 
 ```text
 CANopen
-CiA301
-CiA402
-
-NMT
-SDO
-PDO
-Heartbeat
-EMCY
-SYNC
-
-Motor semantics
-Robot Safety
-System Lifecycle
-ROS2
+自定义 CAN 协议
+机器人硬件通信
+驱动器通信
+传感器通信
+CAN 测试工具
 ```
 
-模块目标是：
+CAN 模块只解决：
 
-> 提供一个轻量、明确、可独立复用的 Linux CAN 基础层，使 CANopen 或其他 CAN 协议能够建立在稳定的 `can::Interface` 之上，而不直接依赖 Linux SocketCAN API。
+> 如何可靠、清晰地通过 Linux SocketCAN 发送、接收和诊断 CAN Frame。
 
-### 平台范围
+它不理解具体设备或上层协议。
 
-V1 明确：
+---
+
+### 1.2 平台与版本范围
+
+V1：
 
 ```text
 Language:
     C++17
 
 Platform:
-    Linux only
+    Linux
 
 Backend:
-    Linux SocketCAN
+    SocketCAN / CAN_RAW
 
 Protocol:
-    Classic CAN first
-
-Future:
-    CAN FD
+    Classic CAN
 ```
 
-V1 不承诺：
+实现允许直接使用：
 
 ```text
-Windows CAN API
-vendor-specific CAN SDK
-cross-platform CAN abstraction
-CANopen FD
+socket()
+bind()
+setsockopt()
+recvmsg()
+send()
+fcntl()
+poll()
+epoll()
+
+linux/can.h
+linux/can/raw.h
+linux/can/error.h
 ```
 
-CAN 模块可以直接使用：
+当前没有第二个平台，因此不建立：
 
 ```text
-socket
-bind
-setsockopt
-recvmsg
-send
-poll / epoll
-fcntl
-ioctl
-SocketCAN
+Platform
+Backend
+TransportFactory
+SocketBackend
+DriverBackend
 ```
 
-等 Linux 接口，不为了理论跨平台提前建设 backend framework。
-
-### 核心原则
-
-1. CAN 模块只表达 CAN 总线、Frame 和总线运行事实。
-2. CAN 不认识 CANopen、CiA402 或机器人设备。
-3. `can::Interface` 是上层协议依赖的稳定边界。
-4. Linux `struct can_frame` 和 kernel flag 不泄漏到协议层。
-5. Classic CAN 与 CAN FD 使用不同类型表达。
-6. RX/TX 默认面向 non-blocking 使用方式。
-7. Error Frame 不得静默丢弃。
-8. 正常 CAN Frame 与 Bus Event 使用不同语义通路。
-9. RX timestamp 必须属于 monotonic control-time compatible domain。
-10. `send()` 成功只表达本地 TX path 接受，不表示远端执行成功。
-11. 一个 Linux CAN interface 可以被多个 socket 同时绑定。
-12. CAN 模块不引入全局 Bus Manager 或 Singleton。
-13. 线程 ownership 必须明确，不默认任意多线程安全。
-14. Status / Stats 只表达 CAN 层事实。
-15. 性能优化必须以完整 SocketCAN RX/TX benchmark 为依据。
-
-主要参考：
-
-```text
-Linux SocketCAN
-    CAN RAW socket semantics
-    filters
-    error frames
-    timestamps
-    multiple sockets
-    CAN FD extension
-
-ros-industrial/ros_canopen
-    socketcan_interface
-    CAN abstraction boundary
-
-CANopenNode
-    CAN driver abstraction
-    frame / filter concepts
-
-can-utils
-    integration testing
-    traffic generation
-    bus diagnostics
-```
+等跨平台抽象。
 
 ---
 
-## 2. 模块结构与核心接口
+### 1.3 非目标
 
-推荐目录：
-
-```text
-include/can/
-├── frame.hpp
-├── interface.hpp
-├── socketcan.hpp
-├── filter.hpp
-├── timestamp.hpp
-├── event.hpp
-├── status.hpp
-├── statistics.hpp
-└── error.hpp
-
-src/can/
-├── socketcan.cpp
-├── event.cpp
-├── status.cpp
-├── statistics.cpp
-└── error.cpp
-```
-
-V1 不增加：
+V1 不负责：
 
 ```text
-manager.hpp
-bus.hpp
-transport.hpp
-executor.hpp
-session.hpp
-protocol.hpp
-factory.hpp
+CANopen
+CiA 301
+CiA 402
+
+NMT
+PDO
+SDO
+SYNC
+Heartbeat
+EMCY
+
+Device state machine
+Motor semantics
+Robot safety
+System lifecycle
+
+ROS / ROS2
+
+Bus Manager
+Singleton
+Global Registry
+
+Thread Pool
+Executor
+Async Runtime
+Callback Dispatcher
 ```
 
-namespace：
-
-```cpp
-namespace can {}
-```
-
-核心关系：
+CAN interface 的系统配置也不属于本模块：
 
 ```text
-             CANopen / Custom Protocol
-                       │
-                       ▼
-                can::Interface
-                       │
-                       ▼
-                can::SocketCan
-                       │
-        ┌──────────────┼───────────────┐
-        ▼              ▼               ▼
-      Frame         BusEvent       Status/Stats
-                       │
-                       ▼
-                Linux SocketCAN
-                       │
-                       ▼
-                    CAN Bus
+bitrate
+sample point
+restart-ms
+interface up/down
+CAN FD enable
 ```
 
-建议公共类型：
+这些应由：
 
-```cpp
-namespace can {
-
-struct Frame;
-struct Filter;
-
-struct MonotonicTimestamp;
-struct RxMetadata;
-
-struct BusEvent;
-
-struct SocketCanConfig;
-struct Status;
-struct Stats;
-
-class Interface;
-class SocketCan;
-
-enum class ErrorCode;
-struct Error;
-
-}
+```text
+iproute2
+systemd-networkd
+deployment scripts
+system configuration
 ```
+
+完成。
 
 ---
 
-## 3. Frame、Interface 与 SocketCAN
+### 1.4 核心原则
 
-### 3.1 Classic CAN Frame
+V1 必须遵守：
 
-V1 只定义 Classic CAN：
+1. CAN 层只表达 CAN bus 和 CAN Frame 事实。
+2. CAN 层不得包含 CANopen 或设备语义。
+3. Linux `can_frame` 和 CAN flag 不泄漏到 public API。
+4. Standard / Extended、Data / Remote 使用明确领域类型。
+5. Error Frame 与普通 Frame 使用不同语义。
+6. Socket 默认并固定为 non-blocking。
+7. 不创建隐藏 RX/TX worker。
+8. 不隐藏 retry、sleep 或后台 queue。
+9. 一个 Linux CAN interface 可以同时拥有多个 Socket。
+10. Filter 属于单个 Socket。
+11. `send()` 成功只代表 kernel TX path 接受 Frame。
+12. 并发依赖明确 ownership，而不是任意线程安全。
+13. 所有时间戳必须明确 clock domain。
+14. 运行路径不得因为诊断逻辑产生无界工作。
+15. 内部队列必须 bounded。
+16. 没有真实需求的功能不进入 V1。
+
+最终设计目标是：
+
+> API 简单，但 CAN 语义完整；实现轻量，但关键行为明确。
+
+---
+
+## 2. 数据模型
+
+### 2.1 Frame
+
+V1 只支持 Classic CAN：
 
 ```cpp
 enum class FrameFormat : std::uint8_t {
@@ -254,76 +198,36 @@ struct Frame {
 };
 ```
 
-语义：
+`FrameFormat` 和 `FrameType` 是明确的 CAN domain semantics，因此不应简化成：
+
+```cpp
+bool extended;
+bool remote;
+```
+
+### FrameFormat
 
 ```text
-Standard:
-    11-bit CAN ID
+Standard
+    11-bit CAN identifier
 
-Extended:
-    29-bit CAN ID
+Extended
+    29-bit CAN identifier
+```
 
-Data:
-    normal data frame
+### FrameType
 
-Remote:
+```text
+Data
+    normal CAN data frame
+
+Remote
     RTR frame
 ```
 
-公共 `Frame` 不暴露：
-
-```text
-CAN_EFF_FLAG
-CAN_RTR_FLAG
-CAN_ERR_FLAG
-struct can_frame
-```
-
-这些只存在于 SocketCAN backend。
-
 ---
 
-### 3.2 Classic CAN 与 CAN FD
-
-V1 不采用：
-
-```cpp
-std::array<std::byte, 64>
-```
-
-统一覆盖 Classic CAN / CAN FD。
-
-未来 CAN FD 使用独立类型：
-
-```cpp
-struct FdFrame {
-    std::uint32_t id;
-    std::uint8_t size;
-
-    FrameFormat format;
-
-    std::array<std::byte, 64> data;
-};
-```
-
-CAN FD 的：
-
-```text
-BRS
-ESI
-payload length semantics
-socket option
-```
-
-以后单独设计。
-
-原则：
-
-> 不为了未来 CAN FD 提前复杂化 Classic CAN V1 API。
-
----
-
-### 3.3 Frame Validation
+### 2.2 Frame validation
 
 发送前必须验证：
 
@@ -338,158 +242,315 @@ Classic CAN:
     size <= 8
 ```
 
-非法 Frame：
+非法 Frame 返回：
 
-```text
-reject before kernel send
-    ↓
+```cpp
 ErrorCode::InvalidFrame
 ```
 
-CAN 模块不验证：
+并且必须在进入 kernel syscall 之前拒绝。
+
+CAN 层不得校验：
 
 ```text
 COB-ID
-PDO size
-CANopen object
-device-specific payload
+Node ID
+PDO payload
+SDO payload
+device-specific command
 ```
 
 这些属于上层协议。
 
 ---
 
-### 3.4 Interface
+### 2.3 Linux Frame 映射
 
-`can::Interface` 是协议层依赖的核心边界。
+Public API 不得暴露：
 
-建议：
+```text
+CAN_EFF_FLAG
+CAN_RTR_FLAG
+CAN_ERR_FLAG
+
+CAN_SFF_MASK
+CAN_EFF_MASK
+
+canid_t
+struct can_frame
+```
+
+转换仅存在于 SocketCAN implementation。
+
+例如内部可以有：
 
 ```cpp
-class Interface {
-public:
-    virtual ~Interface() = default;
-
-    virtual Result<void> open() = 0;
-    virtual Result<void> close() = 0;
-
-    virtual Result<void> send(
-        const Frame& frame) noexcept = 0;
-
-    virtual Result<bool> receive(
-        Frame& frame,
-        RxMetadata& metadata) noexcept = 0;
-
-    virtual bool try_pop_event(
-        BusEvent& event) noexcept = 0;
-
-    virtual Status status() const noexcept = 0;
-    virtual Stats stats() const noexcept = 0;
-};
+::can_frame to_native(const Frame&) noexcept;
+Result<Frame> from_native(const ::can_frame&) noexcept;
 ```
 
-Interface 只表达：
+但这些不是 public API。
 
-```text
-lifecycle
-Frame TX
-Frame RX
-Bus Event
-Status
-Stats
+---
+
+### 2.4 Remote Frame
+
+`FrameType::Remote` 表示 RTR。
+
+`size` 表示请求的数据长度。
+
+对于 Remote Frame：
+
+* `data` 不具有普通 Data Frame payload 语义；
+* CAN 层不得解释 `data`；
+* native conversion 必须正确设置和解析 RTR flag。
+
+---
+
+### 2.5 CAN FD
+
+V1 不支持 CAN FD。
+
+不得为了未来 CAN FD 将：
+
+```cpp
+std::array<std::byte, 8>
 ```
 
-不表达：
+提前改为：
+
+```cpp
+std::array<std::byte, 64>
+```
+
+未来如需 CAN FD，应独立增加：
+
+```cpp
+struct FdFrame;
+```
+
+并独立处理：
 
 ```text
-CANopen node
-callback registry
-protocol dispatcher
-thread pool
-bus manager
+64-byte payload
+BRS
+ESI
+CAN_RAW_FD_FRAMES
+CANFD_MTU
 ```
 
 ---
 
-### 3.5 receive() Contract
-
-V1 保持：
+### 2.6 Filter
 
 ```cpp
-Result<bool> receive(
-    Frame& frame,
-    RxMetadata& metadata) noexcept;
-```
-
-语义：
-
-```text
-success + true
-    返回一个正常 Data / Remote Frame
-
-success + false
-    当前没有可返回的正常 Frame
-
-failure
-    发生真正的 socket / I/O failure
-```
-
-因此：
-
-```text
-No Data
-```
-
-不是错误。
-
-V1 暂不因为高频场景提前改成：
-
-```cpp
-enum class ReceiveStatus {
-    Ok,
-    Empty,
-    Error,
+struct Filter {
+    std::uint32_t id{0};
+    std::uint32_t mask{0};
+    FrameFormat format{FrameFormat::Standard};
 };
 ```
 
-如果 benchmark 确认 `Result<bool>` 在完整 RX path 中形成可测瓶颈，再进行 API 优化。
+Filter 只表达 CAN identifier matching。
 
-优化判断必须基于：
+不得包含：
 
 ```text
-recvmsg
-timestamp ancillary parsing
-frame conversion
-filtering
-dispatch
+CANopen COB-ID
+Node ID
+PDO type
+protocol ownership
 ```
 
-整个路径，而不是仅基于返回值大小猜测。
+Validation：
+
+```text
+Standard:
+    id <= 0x7FF
+    mask <= 0x7FF
+
+Extended:
+    id <= 0x1FFFFFFF
+    mask <= 0x1FFFFFFF
+```
 
 ---
 
-### 3.6 Error Frame 与 BusEvent
+### 2.7 Filter 与 SocketCAN
 
-Linux CAN Error Frame 不作为普通 `Frame` 暴露。
-
-原因：
-
-```text
-normal CAN Frame
-    → protocol input
-
-CAN Error Frame
-    → bus diagnostic fact
-```
-
-二者语义不同。
-
-V1 定义：
+Linux `CAN_RAW_FILTER` 最终使用：
 
 ```cpp
-enum class BusEventType : std::uint8_t {
-    ErrorWarning,
-    ErrorPassive,
+struct can_filter {
+    canid_t can_id;
+    canid_t can_mask;
+};
+```
+
+匹配语义：
+
+```text
+received_can_id & mask
+    ==
+filter_can_id & mask
+```
+
+Standard / Extended 必须显式参与匹配。
+
+对于 Standard：
+
+```text
+CAN_EFF_FLAG expected = 0
+```
+
+对于 Extended：
+
+```text
+CAN_EFF_FLAG expected = 1
+```
+
+因此 native filter conversion 必须把 EFF flag 正确加入：
+
+```text
+can_id
+can_mask
+```
+
+否则：
+
+> Extended Frame 与 Standard Frame 低 11-bit 相同时可能错误匹配。
+
+这是 V1 必须测试的关键行为。
+
+Filter 在 `Socket::open()` 时安装。
+
+V1 不提供：
+
+```cpp
+set_filters()
+add_filter()
+remove_filter()
+clear_filters()
+```
+
+即：
+
+> Socket 打开以后 Filter 不动态修改。
+
+---
+
+### 2.8 Timestamp 与 RxInfo
+
+公共时间类型：
+
+```cpp
+using Timestamp =
+    std::chrono::time_point<
+        std::chrono::steady_clock,
+        std::chrono::nanoseconds>;
+```
+
+表示 monotonic domain。
+
+```cpp
+struct RxInfo {
+    Timestamp received_at{};
+};
+```
+
+`received_at` 表示：
+
+> 用户态成功接收到该 CAN Frame 时记录的 monotonic timestamp。
+
+它不等于：
+
+```text
+controller hardware RX timestamp
+exact physical bus arrival time
+```
+
+---
+
+### 2.9 Kernel timestamp
+
+Linux 提供：
+
+```text
+SO_TIMESTAMPNS
+SO_TIMESTAMPING
+```
+
+但不同 timestamp 可能属于：
+
+```text
+CLOCK_REALTIME
+system clock
+hardware clock
+PHC
+```
+
+等不同 clock domain。
+
+因此 V1 必须保证：
+
+> 不能把 kernel timestamp 未经 clock-domain 验证直接转换成 `steady_clock::time_point`。
+
+尤其禁止：
+
+```text
+CLOCK_REALTIME timespec
+    ↓ direct cast
+steady_clock::time_point
+```
+
+V1 首先保证：
+
+```text
+RxInfo::received_at
+    = 明确的 monotonic userspace receive timestamp
+```
+
+未来如果确实需要 kernel/hardware RX timestamp，再单独设计：
+
+```text
+TimestampSource
+clock domain
+clock conversion
+PHC synchronization
+```
+
+---
+
+### 2.10 Event 与 State
+
+正常 CAN Frame 与 Error Frame 是不同语义。
+
+Error Frame 不作为：
+
+```cpp
+Frame
+```
+
+返回给 protocol 层。
+
+定义：
+
+```cpp
+enum class State : std::uint8_t {
+    Unknown,
+    Active,
+    Warning,
+    Passive,
+    BusOff,
+};
+```
+
+以及：
+
+```cpp
+enum class EventType : std::uint8_t {
+    Warning,
+    Passive,
     BusOff,
     Restarted,
 
@@ -501,784 +562,109 @@ enum class BusEventType : std::uint8_t {
     Unknown,
 };
 
-struct BusEvent {
-    BusEventType type{BusEventType::Unknown};
-
-    MonotonicTimestamp timestamp;
+struct Event {
+    EventType type{EventType::Unknown};
+    Timestamp timestamp{};
 
     std::uint32_t detail{0};
     int native_code{0};
 };
 ```
 
-SocketCan 收到 kernel Error Frame 时：
+`State` 表示：
+
+> 当前 best-known CAN bus/controller state。
+
+`Event` 表示：
+
+> 已发生的一次离散诊断事实。
+
+例如：
 
 ```text
-recvmsg()
+BusOff Event
     ↓
-detect CAN_ERR_FLAG
-    ↓
-decode BusEvent
-    ↓
-update Status
-    ↓
-update Stats
-    ↓
-push to bounded internal BusEvent queue
+State = BusOff
 ```
 
-上层通过：
+但：
+
+```text
+ArbitrationLost Event
+```
+
+通常不会形成长期 State。
+
+无法可靠判断状态时：
 
 ```cpp
-bool try_pop_event(
-    BusEvent& event) noexcept;
+State::Unknown
 ```
 
-获取事件。
-
-因此 CAN 层对外有三类不同信息：
-
-```text
-Frame
-    protocol data
-
-BusEvent
-    discrete bus diagnostic event
-
-Status / Stats
-    aggregated bus facts
-```
-
-三者不能互相替代。
+优于猜测。
 
 ---
 
-### 3.7 BusEvent Queue
+### 2.11 Stats
 
-内部 BusEvent delivery 必须：
-
-```text
-bounded
-non-blocking
-no hidden dynamic allocation in runtime
-```
-
-事件队列满时：
-
-```text
-不能阻塞 RX path
-```
-
-因此应：
-
-```text
-increment dropped_event counter
-update Stats
-```
-
-而不是阻塞接收线程。
-
-BusEvent queue 是 CAN 模块内部诊断通路，不建设通用 EventBus。
-
----
-
-### 3.8 Error Frame 接收行为
-
-`receive(Frame...)` 只向上返回普通 Frame。
-
-如果一次底层读取获得 Error Frame，则：
-
-```text
-decode event
-    ↓
-queue event
-    ↓
-continue according to bounded receive policy
-```
-
-实现不得在一个 `receive()` 调用中形成无界：
-
-```text
-while(error_frame)
-    recvmsg()
-```
-
-循环。
-
-V1 实现应保证：
-
-> 单次 `receive()` 的用户态处理量有明确上限。
-
-具体是：
-
-```text
-one native frame per call
-```
-
-还是：
-
-```text
-small fixed number of native frames per call
-```
-
-属于实现细节，但不得无限消费 error frames。
-
-若本次只消费了 BusEvent，没有正常 Frame：
-
-```text
-receive() → success + false
-```
-
-BusEvent 通过 `try_pop_event()` 获取。
-
----
-
-### 3.9 SocketCan
-
-Linux backend：
+运行统计保持最小：
 
 ```cpp
-class SocketCan final : public Interface {
-public:
-    explicit SocketCan(
-        SocketCanConfig config);
+struct Stats {
+    std::uint64_t rx_frames{0};
+    std::uint64_t tx_frames{0};
 
-    Result<void> open() override;
-    Result<void> close() override;
+    std::uint64_t rx_errors{0};
+    std::uint64_t tx_errors{0};
 
-    Result<void> send(
-        const Frame& frame) noexcept override;
-
-    Result<bool> receive(
-        Frame& frame,
-        RxMetadata& metadata) noexcept override;
-
-    bool try_pop_event(
-        BusEvent& event) noexcept override;
-
-    Status status() const noexcept override;
-    Stats stats() const noexcept override;
-
-    int native_handle() const noexcept;
+    std::uint64_t error_frames{0};
+    std::uint64_t rx_overruns{0};
+    std::uint64_t dropped_events{0};
 };
 ```
 
-`native_handle()` 是：
-
-> Linux integration escape hatch。
-
-可用于：
+含义：
 
 ```text
-poll
-epoll
-external event loop
-diagnostics
+rx_frames
+    成功返回给用户的正常 CAN Frame
+
+tx_frames
+    成功提交给 kernel TX path 的 Frame
+
+rx_errors
+    真正 receive/socket I/O errors
+    EAGAIN 不计入
+
+tx_errors
+    send/socket I/O errors
+
+error_frames
+    收到的 SocketCAN Error Frame
+
+rx_overruns
+    已知 RX overflow / overrun
+
+dropped_events
+    内部 Event queue 满导致丢弃的事件
 ```
 
-但上层 CANopen 协议不应依赖 native fd 作为普通接口。
-
----
-
-## 4. 配置、过滤、时间戳与总线状态
-
-### 4.1 SocketCanConfig
-
-V1：
-
-```cpp
-struct SocketCanConfig {
-    std::string interface;
-
-    bool non_blocking{true};
-
-    bool receive_error_frames{true};
-    bool receive_own_messages{false};
-
-    std::vector<Filter> filters;
-};
-```
-
-配置只描述 SocketCAN socket。
-
-不负责：
+不得统计：
 
 ```text
-ip link set can0 up
-bitrate
-sample point
-restart-ms
-CAN FD enable
-hardware firmware
-```
-
-这些属于：
-
-```text
-deployment
-iproute2
-systemd-networkd
-scripts
-```
-
-CAN V1 不成为 Linux network configuration manager。
-
----
-
-### 4.2 Filter
-
-公共 API：
-
-```cpp
-struct Filter {
-    std::uint32_t id{0};
-    std::uint32_t mask{0};
-
-    FrameFormat format{FrameFormat::Standard};
-};
-```
-
-Filter 只表达：
-
-```text
-CAN ID
-ID mask
-Standard / Extended
-```
-
-不表达 CANopen COB-ID semantics。
-
----
-
-### 4.3 Filter → SocketCAN 映射
-
-Linux：
-
-```cpp
-struct can_filter {
-    canid_t can_id;
-    canid_t can_mask;
-};
-```
-
-Standard 与 Extended 必须显式匹配 `CAN_EFF_FLAG`。
-
-#### Standard
-
-逻辑：
-
-```text
-expected EFF flag = 0
-```
-
-转换：
-
-```cpp
-native.can_id =
-    filter.id;
-
-native.can_mask =
-    filter.mask | CAN_EFF_FLAG;
-```
-
-这样 Extended Frame 即使低 11 bit ID 相同，也不会错误匹配 Standard Filter。
-
-#### Extended
-
-逻辑：
-
-```text
-expected EFF flag = 1
-```
-
-转换：
-
-```cpp
-native.can_id =
-    filter.id | CAN_EFF_FLAG;
-
-native.can_mask =
-    filter.mask | CAN_EFF_FLAG;
-```
-
-因此：
-
-```text
-CAN_EFF_FLAG in mask
-    ↓
-frame format participates in filter matching
-```
-
-如果未来 Filter 还需要严格区分：
-
-```text
-RTR
-```
-
-则使用同样原则：
-
-```text
-CAN_RTR_FLAG
-```
-
-参与 `can_id` / `can_mask` 转换。
-
-kernel flag 转换必须集中到 SocketCAN internal helper，例如：
-
-```cpp
-::can_filter to_native_filter(
-    const can::Filter&) noexcept;
-```
-
-不得让 kernel bit flag 出现在公共 Filter API。
-
----
-
-### 4.4 Filter Tests
-
-至少覆盖：
-
-```text
-Standard filter:
-    matches Standard same ID
-    rejects Extended same low 11-bit ID
-
-Extended filter:
-    matches Extended same ID
-    rejects Standard frame
-
-masked filter:
-    expected ID-mask matching
-
-invalid Standard ID:
-    rejected
-
-invalid Extended ID:
-    rejected
-```
-
-避免由于 `CAN_EFF_FLAG` mask 错误造成隐蔽 frame 泄漏。
-
----
-
-### 4.5 Dynamic Filter
-
-V1 MUST：
-
-```text
-configure before open/start
-```
-
-V1 不要求 runtime 动态替换 filter。
-
-如果 CANopen 上层需要动态节点变化，可以：
-
-```text
-kernel wide filter
-    ↓
-user-space protocol dispatch
-```
-
-后续有真实性能需求时，再增加 runtime filter replacement。
-
----
-
-### 4.6 Monotonic Timestamp
-
-CAN 模块不依赖 `realtime` target。
-
-但所有 CAN control timestamp 必须与 RoboHardware 的 monotonic control-time domain 兼容。
-
-定义：
-
-```cpp
-struct MonotonicTimestamp {
-    std::int64_t nanoseconds{0};
-};
-```
-
-语义：
-
-```text
-nanoseconds in Linux monotonic time domain
-```
-
-RxMetadata：
-
-```cpp
-struct RxMetadata {
-    MonotonicTimestamp received_at;
-};
-```
-
-System 可以无损转换为自己的：
-
-```text
-realtime::TimePoint
-```
-
-而无需 CAN → Realtime 依赖。
-
-V1 不为了共享 timestamp 创建：
-
-```text
-common/
-core/
-time/
-```
-
-模块。
-
----
-
-### 4.7 RX Timestamp Source
-
-V1 RX timestamp 是 MUST。
-
-优先读取 Linux socket ancillary timestamp：
-
-```text
-recvmsg()
-    ↓
-control message
-    ↓
-SO_TIMESTAMPNS / SO_TIMESTAMPING
-```
-
-而不是简单：
-
-```text
-recvmsg()
-    ↓
-Clock::now()
-```
-
-后者只能表示：
-
-```text
-userspace handling time
-```
-
-无法准确表达 kernel receive time。
-
-实现必须明确 timestamp 的 clock domain。
-
-禁止把：
-
-```text
-CLOCK_REALTIME timestamp
-```
-
-直接假装成 monotonic control timestamp。
-
-如果特定 timestamping 模式无法提供兼容 monotonic domain，应：
-
-```text
-明确转换
-或
-标记能力不可用
-```
-
-而不是静默混用时钟。
-
----
-
-### 4.8 TX Timestamp
-
-V1：
-
-```text
-RX timestamp
-    MUST
-
-TX kernel/hardware timestamp
-    MAY
-```
-
-V1 可以记录：
-
-```text
-userspace send attempt
-send syscall completion
-```
-
-用于基本性能分析，但必须明确它们不是：
-
-```text
-actual bus transmission timestamp
-```
-
-如果未来引入：
-
-```text
-SO_TIMESTAMPING
-hardware TX timestamp
-SO_TXTIME
-```
-
-单独设计。
-
----
-
-### 4.9 BusState
-
-定义：
-
-```cpp
-enum class BusState {
-    Unknown,
-    Active,
-    Warning,
-    Passive,
-    BusOff,
-};
-```
-
-Status：
-
-```cpp
-struct Status {
-    bool open{false};
-    bool non_blocking{false};
-
-    bool error_frames_enabled{false};
-    bool timestamping_enabled{false};
-
-    BusState bus_state{BusState::Unknown};
-};
-```
-
-BusState 来源可以包括：
-
-```text
-SocketCAN error frame
-netlink/controller state
-other available kernel facts
-```
-
-但如果无法可靠判断：
-
-```text
-Unknown
-```
-
-优于错误推断。
-
----
-
-## 5. I/O、并发、错误与可观测性
-
-### 5.1 Non-blocking I/O
-
-V1 默认：
-
-```text
-non-blocking = true
-```
-
-底层使用：
-
-```text
-O_NONBLOCK
-```
-
-上层可以根据需要组合：
-
-```text
-poll
-epoll
-dedicated RX worker
-external event loop
-```
-
-CAN module 不隐藏：
-
-```text
-blocking receive thread
-retry thread
-async executor
+PDO timeout
+SDO abort
+Heartbeat timeout
+EMCY
+CiA402 fault
+device fault
 ```
 
 ---
 
-### 5.2 Non-blocking 不等于 Realtime-safe
+### 2.12 Error
 
-必须明确：
-
-> `O_NONBLOCK` 只表示 syscall 不等待数据，不代表该 syscall 本身具备 hard realtime guarantee。
-
-`recvmsg()` / `send()` 仍然涉及：
-
-```text
-kernel
-network stack
-driver
-CAN controller
-```
-
-是否直接进入 500 Hz RT callback 必须由上层架构和 benchmark 决定。
-
-推荐总体结构：
-
-```text
-CAN RX worker
-      ↓
-protocol decode
-      ↓
-RT-safe snapshot
-
-RT control
-      ↓
-command snapshot
-      ↓
-CAN TX path
-```
-
-CAN 模块本身只提供：
-
-```text
-non-blocking primitives
-no hidden sleep
-no hidden retry loop
-```
-
----
-
-### 5.3 Thread Ownership
-
-V1 不承诺 `SocketCan` 任意线程安全。
-
-推荐 contract：
-
-```text
-open / close / configure
-    externally serialized
-
-receive()
-    one RX owner
-
-send()
-    one TX owner
-    or externally serialized
-
-try_pop_event()
-    one event consumer
-```
-
-允许典型：
-
-```text
-RX thread
-    receive()
-
-TX thread
-    send()
-```
-
-但不默认支持：
-
-```text
-multiple concurrent receive callers
-multiple concurrent config mutations
-close while send/receive still active
-```
-
-生命周期由 System / upper layer 协调。
-
----
-
-### 5.4 Multiple SocketCAN Sockets
-
-Linux SocketCAN 允许：
-
-```text
-Socket A ─┐
-Socket B ─┼→ can0
-Socket C ─┘
-```
-
-每个 socket 可以：
-
-```text
-own filters
-own receive-own-message setting
-own error mask
-```
-
-因此禁止：
-
-```text
-global CanManager singleton
-one interface can only be opened once
-```
-
-这样的错误假设。
-
-可以合法：
-
-```cpp
-can::SocketCan can0_rx(...);
-can::SocketCan can0_diag(...);
-can::SocketCan can1(...);
-```
-
-但 CANopen Network 通常更适合共享一个 Interface：
-
-```cpp
-auto bus =
-    std::make_shared<can::SocketCan>(...);
-
-canopen::Network network(bus);
-```
-
-这是上层 ownership 决策，不是 CAN 模块强制限制。
-
----
-
-### 5.5 send() 成功的严格语义
-
-```cpp
-send(frame)
-```
-
-成功只表示：
-
-> frame 被本地主机 SocketCAN/kernel TX path 接受。
-
-不保证：
-
-```text
-完成 arbitration
-实际出现在 CAN bus
-远端节点收到
-远端协议接受
-驱动器执行命令
-```
-
-因此：
-
-```text
-send success
-    ≠
-device command confirmed
-```
-
-闭环确认必须由上层使用：
-
-```text
-feedback
-protocol state
-device status
-watchdog
-```
-
-完成。
-
----
-
-### 5.6 Error
-
-V1：
+CAN 层使用统一结构化错误。
 
 ```cpp
 enum class ErrorCode {
@@ -1286,261 +672,1204 @@ enum class ErrorCode {
     InvalidFrame,
     InvalidState,
 
-    InterfaceNotFound,
-
     OpenFailed,
-    BindFailed,
-    ConfigureFailed,
-
-    SendFailed,
-    ReceiveFailed,
-
-    TimestampFailed,
-    FilterFailed,
+    IoFailed,
 };
-```
 
-Error：
-
-```cpp
 struct Error {
-    ErrorCode code;
+    ErrorCode code{ErrorCode::InvalidState};
     int native_code{0};
 };
 ```
 
-CAN V1 基本都使用 Linux syscall API，因此：
+通过：
 
-```text
-native_code = errno
+```cpp
+Result<T>
 ```
 
-即可。
+返回。
 
-`EAGAIN` / `EWOULDBLOCK` 在 non-blocking `receive()` 中：
-
-```text
-不是 Error
-→ success + false
-```
-
-CAN 的 Error 不负责转换成：
+不为每个 syscall 创建独立 ErrorCode，例如：
 
 ```text
-SystemFault
-CommunicationFault
-SafetyAction
+BindFailed
+FilterFailed
+TimestampFailed
+SetsockoptFailed
+ReceiveFailed
+SendFailed
+IoctlFailed
 ```
 
-这些属于 System。
+具体 Linux 原因保存在：
+
+```cpp
+native_code
+```
+
+中。
 
 ---
 
-### 5.7 Stats
+## 3. Socket API 与行为
 
-定义：
+### 3.1 Interface
+
+保留一个最小 `Interface` 作为上层 protocol boundary：
 
 ```cpp
-struct Stats {
-    std::uint64_t rx_frames{0};
-    std::uint64_t tx_frames{0};
+class Interface {
+public:
+    virtual ~Interface() = default;
 
-    std::uint64_t rx_bytes{0};
-    std::uint64_t tx_bytes{0};
+    virtual Result<void> send(
+        const Frame& frame) noexcept = 0;
 
-    std::uint64_t rx_errors{0};
-    std::uint64_t tx_errors{0};
+    virtual Result<bool> receive(
+        Frame& frame,
+        RxInfo& info) noexcept = 0;
 
-    std::uint64_t error_frames{0};
-    std::uint64_t dropped_events{0};
-
-    std::uint64_t rx_overruns{0};
-
-    std::uint64_t bus_off_events{0};
+    virtual bool try_pop_event(
+        Event& event) noexcept = 0;
 };
 ```
 
-只统计 CAN 层事实。
+它的目的只有两个：
 
-不统计：
+1. CANopen / custom protocol 不直接依赖 Linux SocketCAN；
+2. protocol test 可以使用 fake/in-memory CAN implementation。
 
-```text
-PDO missing
-SDO abort
-Heartbeat timeout
-CiA402 fault
-```
-
----
-
-### 5.8 Observability
-
-CAN 模块只暴露：
+`Interface` 不负责：
 
 ```text
-Status
-Stats
-BusEvent
-Error
-```
-
-不实现：
-
-```text
-spdlog integration
-CSV
-Prometheus
-ROS publisher
-InfluxDB
-```
-
-高频：
-
-```text
-RX log
-TX log
-```
-
-默认关闭。
-
-诊断功能不能显著改变正常 CAN timing。
-
----
-
-## 6. V1 范围、测试与架构不变量
-
-### V1 MUST
-
-必须实现：
-
-```text
-Classic CAN Frame
-
-Standard / Extended ID
-
-Data / Remote Frame
-
-Frame validation
-
-Filter
-
-Interface abstraction
-
-SocketCan backend
-
 open / close
-
-non-blocking send / receive
-
-RX timestamp
-
-BusEvent
-
-CAN error-frame decoding
-
-bounded event delivery
-
-BusState
-
-Status
-
-Stats
-
-structured Error
-
-native fd escape hatch
-
-vcan integration tests
-
-physical CAN validation
+fd
+state
+stats
+filters
+Linux configuration
 ```
 
-### SHOULD
+因此它不是 backend framework。
 
-建议完成：
+---
+
+### 3.2 Socket
+
+具体 Linux SocketCAN implementation：
+
+```cpp
+class Socket final : public Interface {
+public:
+    struct Options {
+        std::string interface;
+
+        bool error_frames{true};
+        bool receive_own{false};
+
+        std::vector<Filter> filters;
+    };
+
+    static Result<Socket> open(
+        Options options);
+
+    ~Socket();
+
+    Socket(const Socket&) = delete;
+    Socket& operator=(const Socket&) = delete;
+
+    Socket(Socket&&) noexcept;
+    Socket& operator=(Socket&&) noexcept;
+
+    Result<void> send(
+        const Frame& frame) noexcept override;
+
+    Result<bool> receive(
+        Frame& frame,
+        RxInfo& info) noexcept override;
+
+    bool try_pop_event(
+        Event& event) noexcept override;
+
+    State state() const noexcept;
+    Stats stats() const noexcept;
+
+    int fd() const noexcept;
+};
+```
+
+使用：
+
+```cpp
+auto socket = can::Socket::open({
+    .interface = "can0",
+});
+```
+
+名称使用：
 
 ```text
-RX overflow accounting
-
-additional socket diagnostics
-
-poll/epoll example
-
-bus-off test
-
-physical CAN stress benchmark
-
-TX software timing metrics
+can::Socket
 ```
 
-### MAY
+而不是：
 
-按真实需求增加：
+```text
+can::SocketCan
+```
+
+因为 namespace 和模块定位已经明确 SocketCAN context。
+
+---
+
+### 3.3 生命周期
+
+采用：
+
+> factory + RAII
+
+成功返回的 `Socket` 必须已经：
+
+```text
+socket created
+configured
+filtered
+bound
+ready
+```
+
+因此不提供：
+
+```cpp
+open()
+close()
+is_open()
+```
+
+不存在：
+
+```text
+constructed-but-not-open
+partially-open
+double-open
+```
+
+等中间 public state。
+
+析构负责关闭 fd。
+
+---
+
+### 3.4 open() 流程
+
+`Socket::open()` 推荐顺序：
+
+```text
+validate Options
+    ↓
+socket(PF_CAN, SOCK_RAW, CAN_RAW)
+    ↓
+set O_NONBLOCK
+    ↓
+resolve interface index
+    ↓
+configure SocketCAN options
+    ↓
+install filters
+    ↓
+configure error-frame mask
+    ↓
+configure receive-own-message
+    ↓
+bind()
+    ↓
+return ready Socket
+```
+
+任意阶段失败：
+
+```text
+close temporary fd
+return Error
+```
+
+不得返回半初始化对象。
+
+---
+
+### 3.5 Non-blocking
+
+V1 Socket 固定为 non-blocking。
+
+不提供：
+
+```cpp
+bool non_blocking;
+```
+
+配置项。
+
+原因：
+
+* `receive()` 已定义 empty 状态；
+* 等待策略应由调用者控制；
+* `poll/epoll` 已足够；
+* 减少 blocking/non-blocking 两套行为。
+
+因此：
+
+```text
+O_NONBLOCK
+```
+
+是 V1 invariant。
+
+---
+
+### 3.6 send()
+
+API：
+
+```cpp
+Result<void> send(
+    const Frame& frame) noexcept;
+```
+
+行为：
+
+```text
+validate Frame
+    ↓
+convert to native can_frame
+    ↓
+send()
+    ↓
+update Stats
+```
+
+`send()` 成功只表示：
+
+> 当前 Linux SocketCAN TX path 接受了 Frame。
+
+不表示：
+
+```text
+赢得 arbitration
+已经实际发送到 CAN bus
+远端节点收到
+远端协议接受
+设备已经执行
+```
+
+V1 不在 `send()` 内：
+
+```text
+retry
+sleep
+spin
+internal queue
+```
+
+一次调用只执行一次 bounded send attempt。
+
+---
+
+### 3.7 receive()
+
+API：
+
+```cpp
+Result<bool> receive(
+    Frame& frame,
+    RxInfo& info) noexcept;
+```
+
+语义严格定义为：
+
+```text
+success + true
+    返回一个正常 CAN Frame
+
+success + false
+    本次没有正常 CAN Frame 返回
+
+failure
+    真正的 socket / I/O failure
+```
+
+如果 kernel 返回：
+
+```text
+EAGAIN
+EWOULDBLOCK
+```
+
+必须返回：
+
+```text
+success + false
+```
+
+而不是 Error。
+
+---
+
+### 3.8 单次 receive 的工作量
+
+每次 `receive()`：
+
+> 最多消费一个 native CAN frame。
+
+不允许：
+
+```text
+不断读取 Error Frame，
+直到找到一个正常 Frame 才返回
+```
+
+原因是需要保证：
+
+```text
+bounded work per receive call
+```
+
+正常 Frame：
+
+```text
+recvmsg()
+    ↓
+decode
+    ↓
+capture monotonic timestamp
+    ↓
+update Stats
+    ↓
+return true
+```
+
+Error Frame：
+
+```text
+recvmsg()
+    ↓
+decode Error Frame
+    ↓
+update Event / State / Stats
+    ↓
+return false
+```
+
+---
+
+### 3.9 Error Frame
+
+如果 native CAN ID 包含：
+
+```text
+CAN_ERR_FLAG
+```
+
+不得作为普通 `Frame` 返回。
+
+至少识别：
+
+```text
+warning
+error passive
+bus off
+restart/recovery
+arbitration lost
+controller error
+protocol error
+RX overflow
+```
+
+不能完整识别时：
+
+```cpp
+EventType::Unknown
+```
+
+不得：
+
+```text
+忽略
+assert
+throw
+```
+
+---
+
+### 3.10 Event queue
+
+`Socket` 内部维护一个小型 fixed-capacity Event queue。
+
+要求：
+
+```text
+bounded
+non-blocking
+runtime no allocation
+```
+
+如果 queue full：
+
+```text
+drop Event
+increment dropped_events
+```
+
+不得阻塞 CAN RX path。
+
+读取：
+
+```cpp
+bool try_pop_event(Event& event) noexcept;
+```
+
+---
+
+### 3.11 Bus State
+
+Socket 保存当前：
+
+```cpp
+State
+```
+
+典型 transition：
+
+```text
+warning
+    → Warning
+
+error passive
+    → Passive
+
+bus off
+    → BusOff
+
+restarted / reliable recovery
+    → Active
+```
+
+如果 kernel 信息不足：
+
+```text
+保持原状态
+或使用 Unknown
+```
+
+不得人为推断不存在的状态。
+
+---
+
+### 3.12 Error Frame subscription
+
+如果：
+
+```cpp
+Options::error_frames == true
+```
+
+则通过：
+
+```text
+CAN_RAW_ERR_FILTER
+```
+
+订阅 V1 所需 Error Frame。
+
+默认：
+
+```cpp
+true
+```
+
+如果为 false：
+
+> Socket 不保证提供 Event / State 的完整错误诊断。
+
+---
+
+### 3.13 receive own messages
+
+```cpp
+bool receive_own{false};
+```
+
+映射：
+
+```text
+CAN_RAW_RECV_OWN_MSGS
+```
+
+默认：
+
+```text
+false
+```
+
+避免发送 socket 默认把自己的 frame 重新作为 RX frame 返回。
+
+不额外抽象 SocketCAN 完整 loopback 配置。
+
+---
+
+### 3.14 fd()
+
+```cpp
+int fd() const noexcept;
+```
+
+用于：
+
+```text
+poll
+epoll
+external event loop
+custom scheduler
+diagnostic tool
+```
+
+模块明确 Linux-only，因此 `fd()` 比：
+
+```text
+native_handle()
+```
+
+更直接。
+
+`Interface` 不暴露 fd。
+
+---
+
+### 3.15 多 Socket
+
+同一 interface 必须允许：
+
+```cpp
+auto control = can::Socket::open({
+    .interface = "can0",
+});
+
+auto diagnostics = can::Socket::open({
+    .interface = "can0",
+});
+```
+
+不同 Socket 可以拥有不同：
+
+```text
+filters
+error-frame mask
+receive-own setting
+```
+
+禁止：
+
+```text
+global CanManager
+interface opened registry
+"can0 already opened"
+Singleton
+```
+
+---
+
+## 4. 错误、诊断与并发
+
+### 4.1 Error 与 empty receive
+
+必须严格区分：
+
+```text
+无数据
+错误
+```
+
+因此：
+
+```text
+EAGAIN / EWOULDBLOCK
+    → receive() == false
+
+EBADF / ENETDOWN / actual recv failure
+    → Error
+```
+
+native errno 必须保留。
+
+---
+
+### 4.2 Error 与 Event
+
+`Error`：
+
+> 本地 API / syscall 执行失败。
+
+`Event`：
+
+> CAN bus/controller 报告的运行时诊断事实。
+
+例如：
+
+```text
+recvmsg() fails
+    → Error
+
+CAN_ERR_BUSOFF received
+    → EventType::BusOff
+```
+
+两者不得混用。
+
+---
+
+### 4.3 Stats
+
+`Stats` 是轻量 snapshot，不是 metrics subsystem。
+
+CAN 模块不实现：
+
+```text
+Prometheus
+CSV
+ROS diagnostics
+InfluxDB
+logging backend
+tracing
+```
+
+上层可以读取：
+
+```cpp
+socket.stats()
+```
+
+自行发布。
+
+---
+
+### 4.4 Thread ownership
+
+`Socket` 不承诺任意并发访问安全。
+
+V1 contract：
+
+```text
+receive()
+    一个 RX owner
+
+send()
+    一个 TX owner
+    或调用者自行序列化
+
+try_pop_event()
+    一个 Event consumer
+
+state()
+stats()
+fd()
+    observational access
+```
+
+典型合法模型：
+
+```text
+RX thread
+    → receive()
+
+TX thread
+    → send()
+```
+
+V1 不保证：
+
+```text
+multiple concurrent receive()
+multiple event consumers
+multiple unsynchronized TX writers
+destruction concurrent with active I/O
+```
+
+---
+
+### 4.5 Realtime 边界
+
+non-blocking 不等于 hard realtime。
+
+CAN 模块能够保证的是：
+
+```text
+no hidden worker
+no hidden retry
+no hidden sleep
+no unbounded Error Frame drain
+bounded Event queue
+no Event-path blocking
+```
+
+但不能保证：
+
+```text
+recvmsg WCET
+send WCET
+CAN arbitration latency
+driver latency
+physical bus latency
+500 Hz deadline
+1 kHz deadline
+```
+
+是否在：
+
+```cpp
+realtime::PeriodicTask
+```
+
+中直接调用：
+
+```cpp
+socket.send()
+socket.receive()
+```
+
+必须根据目标平台 benchmark 决定。
+
+---
+
+### 4.6 Memory allocation
+
+允许 setup 阶段分配：
+
+```text
+Socket::open()
+
+std::string
+std::vector<Filter>
+internal setup storage
+```
+
+但 runtime：
+
+```text
+send()
+receive()
+try_pop_event()
+```
+
+不得主动执行：
+
+```text
+new
+vector growth
+string creation
+unbounded allocation
+```
+
+Event storage 必须在 open/setup 阶段准备。
+
+---
+
+### 4.7 Stats synchronization
+
+`stats()` 不得为了获取完全一致 snapshot 而给：
+
+```text
+send()
+receive()
+```
+
+增加 blocking mutex。
+
+允许使用：
+
+```text
+atomic counters
+lightweight snapshot
+```
+
+诊断数据允许是非事务性 snapshot。
+
+I/O path 简洁性优先。
+
+---
+
+## 5. 实现约束
+
+### 5.1 推荐代码结构
+
+```text
+include/can/
+├── error.hpp
+├── event.hpp
+├── filter.hpp
+├── frame.hpp
+├── interface.hpp
+├── socket.hpp
+└── timestamp.hpp
+
+src/can/
+├── event.cpp
+├── socket.cpp
+└── timestamp.cpp
+```
+
+保持扁平。
+
+不要新增：
+
+```text
+detail/
+internal/
+backend/
+platform/
+manager/
+runtime/
+transport/
+```
+
+少量内部 helper 放 `.cpp` anonymous namespace。
+
+---
+
+### 5.2 Public API 基线
+
+V1 public API 应接近：
+
+```cpp
+namespace can {
+
+enum class FrameFormat : std::uint8_t {
+    Standard,
+    Extended,
+};
+
+enum class FrameType : std::uint8_t {
+    Data,
+    Remote,
+};
+
+struct Frame {
+    std::uint32_t id{0};
+    std::uint8_t size{0};
+    FrameFormat format{FrameFormat::Standard};
+    FrameType type{FrameType::Data};
+    std::array<std::byte, 8> data{};
+};
+
+struct Filter {
+    std::uint32_t id{0};
+    std::uint32_t mask{0};
+    FrameFormat format{FrameFormat::Standard};
+};
+
+using Timestamp =
+    std::chrono::time_point<
+        std::chrono::steady_clock,
+        std::chrono::nanoseconds>;
+
+struct RxInfo {
+    Timestamp received_at{};
+};
+
+enum class State : std::uint8_t {
+    Unknown,
+    Active,
+    Warning,
+    Passive,
+    BusOff,
+};
+
+enum class EventType : std::uint8_t {
+    Warning,
+    Passive,
+    BusOff,
+    Restarted,
+    ArbitrationLost,
+    ControllerError,
+    ProtocolError,
+    RxOverflow,
+    Unknown,
+};
+
+struct Event {
+    EventType type{EventType::Unknown};
+    Timestamp timestamp{};
+    std::uint32_t detail{0};
+    int native_code{0};
+};
+
+struct Stats {
+    std::uint64_t rx_frames{0};
+    std::uint64_t tx_frames{0};
+    std::uint64_t rx_errors{0};
+    std::uint64_t tx_errors{0};
+    std::uint64_t error_frames{0};
+    std::uint64_t rx_overruns{0};
+    std::uint64_t dropped_events{0};
+};
+
+enum class ErrorCode {
+    InvalidArgument,
+    InvalidFrame,
+    InvalidState,
+    OpenFailed,
+    IoFailed,
+};
+
+struct Error {
+    ErrorCode code{ErrorCode::InvalidState};
+    int native_code{0};
+};
+
+class Interface {
+public:
+    virtual ~Interface() = default;
+
+    virtual Result<void> send(
+        const Frame&) noexcept = 0;
+
+    virtual Result<bool> receive(
+        Frame&,
+        RxInfo&) noexcept = 0;
+
+    virtual bool try_pop_event(
+        Event&) noexcept = 0;
+};
+
+class Socket final : public Interface {
+public:
+    struct Options {
+        std::string interface;
+        bool error_frames{true};
+        bool receive_own{false};
+        std::vector<Filter> filters;
+    };
+
+    static Result<Socket> open(Options);
+
+    ~Socket();
+
+    Socket(const Socket&) = delete;
+    Socket& operator=(const Socket&) = delete;
+
+    Socket(Socket&&) noexcept;
+    Socket& operator=(Socket&&) noexcept;
+
+    Result<void> send(
+        const Frame&) noexcept override;
+
+    Result<bool> receive(
+        Frame&,
+        RxInfo&) noexcept override;
+
+    bool try_pop_event(
+        Event&) noexcept override;
+
+    State state() const noexcept;
+    Stats stats() const noexcept;
+
+    int fd() const noexcept;
+};
+
+}
+```
+
+新增 public API 前必须证明：
+
+> V1 已有真实 caller 需要该能力。
+
+---
+
+### 5.3 必须保持的实现不变量
+
+#### Frame
+
+* Linux CAN flags 不进入 public API。
+* Standard / Extended ID 范围正确。
+* Data / Remote 转换正确。
+* Error Frame 不进入正常 Frame path。
+
+#### Socket
+
+* `Socket` move-only。
+* `Socket::open()` 返回 fully initialized object。
+* Socket 固定 non-blocking。
+* 无 background worker。
+* 无 hidden retry。
+* 无 hidden sleep。
+
+#### receive
+
+* EAGAIN 不是 Error。
+* 单次最多消费一个 native frame。
+* Error Frame 处理之后本次返回 false。
+* 不循环 drain Error Frame。
+
+#### Filter
+
+* Standard / Extended matching 正确。
+* EFF flag 必须参与 native mask。
+* Filter 只在 open 阶段配置。
+* V1 无 runtime filter mutation。
+
+#### Event
+
+* Event queue bounded。
+* queue full 不阻塞 RX。
+* queue full 增加 dropped counter。
+* Unknown error frame 可安全表达。
+
+#### Timestamp
+
+* Public Timestamp 必须 monotonic。
+* 不得把 realtime clock timestamp 直接 cast 为 steady clock。
+* V1 不声明 hardware RX timestamp。
+
+#### Runtime
+
+* send / receive / event path 不主动 heap allocate。
+* Stats 不给 I/O path 引入 blocking mutex。
+* 一个 CAN interface 允许多个 Socket。
+
+---
+
+### 5.4 明确不实现
+
+V1 不增加：
 
 ```text
 CAN FD
 
-kernel / hardware TX timestamp
+dynamic filter update
 
-runtime filter replacement
+hardware RX timestamp
+kernel RX timestamp API
+TX timestamp
 
 SO_TXTIME
 
 CAN BCM
+J1939
 
-CAN J1939
-
-netlink CAN configuration
+netlink configuration
 
 automatic bus restart
 
-hardware-specific CAN backend
-```
+vendor backend
 
-不提前建设：
+CAN Manager
+Runtime
+Executor
+Worker Thread
 
-```text
-CanManager Singleton
-Generic Transport
-Protocol Registry
-Bus Framework
-Async Runtime
-Callback Dispatcher Framework
-Driver Factory
+logging
+tracing
+metrics framework
 ```
 
 ---
 
-### Unit Tests
+## 6. 测试与验收
+
+测试分为：
+
+```text
+Unit
+vcan Integration
+Physical CAN
+Performance
+```
+
+---
+
+### 6.1 Unit Tests
+
+#### Frame
 
 覆盖：
 
 ```text
-Frame validation
+Standard min/max ID
+Extended min/max ID
 
-Standard ID
-Extended ID
+invalid Standard ID
+invalid Extended ID
 
-Frame encode/decode
+size = 0
+size = 8
+size > 8
 
-Data / RTR conversion
+Data
+Remote
 
-Filter conversion
+native encode/decode
+EFF
+RTR
+```
 
-Standard/Extended EFF matching
+#### Filter
 
-timestamp conversion
+必须覆盖：
 
-Error mapping
+```text
+Standard exact filter
+Extended exact filter
+masked filter
 
-BusEvent decode
+Standard accepts Standard
+Standard rejects Extended with same low 11 bits
 
-Status / Stats
+Extended accepts Extended
+Extended rejects Standard
+
+invalid id
+invalid mask
+```
+
+特别防止：
+
+> native filter 忘记将 `CAN_EFF_FLAG` 加入 mask。
+
+#### Event
+
+覆盖：
+
+```text
+Warning
+Passive
+BusOff
+Restarted
+ArbitrationLost
+ControllerError
+ProtocolError
+Unknown
+```
+
+验证：
+
+```text
+Event type
+State transition
+Stats
+```
+
+#### Timestamp
+
+验证：
+
+```text
+Timestamp 使用 monotonic type
+连续 receive timestamp 不倒退
+不存在 realtime → steady_clock 直接转换
 ```
 
 ---
 
-### vcan Integration
+### 6.2 vcan Integration
 
 使用：
 
@@ -1548,78 +1877,69 @@ Status / Stats
 vcan0
 ```
 
-验证：
+至少验证：
 
 ```text
-open / close
+Socket open
 
-send / receive
+Standard send / receive
+Extended send / receive
+Remote Frame
 
 non-blocking empty receive
 
-Standard Frame
-Extended Frame
-RTR Frame
+exact filter
+masked filter
 
-kernel filter
-
-Standard filter rejects Extended same low ID
+Standard filter rejects Extended
 Extended filter rejects Standard
 
-receive own messages
+receive own off
+receive own on
 
-multiple SocketCan sockets on same vcan
+multiple sockets on same vcan
 
-timestamp
+fd() + poll
 
-error/event path where vcan allows simulation
+Stats
 
-high-volume traffic
+high-volume RX/TX
 ```
 
-尤其验证：
+必须存在多个 Socket 同时绑定：
 
-> CAN 模块绝不能实现“一个 interface 只能打开一次”的错误 ownership 规则。
+```text
+vcan0
+```
+
+的测试，确保没有错误的全局 interface ownership。
 
 ---
 
-### Physical CAN Validation
+### 6.3 Physical CAN
 
-vcan 无法证明：
+V1 冻结前必须使用真实 CAN controller 验证。
 
-```text
-arbitration
-electrical error
-error passive
-bus-off
-controller queues
-physical bus saturation
-hardware timestamp
-```
-
-所以必须尽早用真实 CAN controller 验证：
+至少覆盖：
 
 ```text
 normal traffic
+high traffic
 
-high load
-
-near saturation
-
-TX queue pressure
-
-RX overflow
+multiple nodes
 
 node disconnect
-
 bus errors
 
-bus-off
+error passive
+bus off
+recovery
 
-recovery behavior
+RX pressure
+TX pressure
 ```
 
-工具：
+可配合：
 
 ```text
 can-utils
@@ -1627,218 +1947,189 @@ candump
 cansend
 cangen
 canbusload
-
 ip -details link show
 ```
 
----
+验证。
 
-### Performance
-
-至少测量：
+`vcan` 无法替代 physical CAN 对：
 
 ```text
-RX throughput
-TX throughput
+arbitration
+electrical errors
+controller states
+bus off
+driver/hardware queue
+```
+
+的验证。
+
+---
+
+### 6.4 Performance
+
+Benchmark 至少关注：
+
+```text
+RX frames/s
+TX frames/s
 
 send syscall latency
 
-recvmsg handling latency
+recvmsg
++ decode
++ timestamp
++ Stats
 
-kernel RX timestamp
-    →
-userspace processing latency
+Error Frame handling cost
 
-error-frame processing cost
+Event queue overflow behavior
 
-event queue overflow
-
-CPU usage under high load
+CPU usage
 ```
 
-对于当前：
+测试：
 
 ```text
-7 joints
-500 Hz
-Classic CAN
+light load
+representative load
+high load
+near saturation
 ```
 
-若粗略：
+Benchmark 的目的不是证明：
+
+> `send()` 某个 wrapper 有多快。
+
+而是确认：
+
+> CAN 模块没有成为完整 SocketCAN I/O path 的主要软件瓶颈。
+
+只有真实 benchmark 证明某个公共抽象存在明显成本时，才允许为了性能修改 API。
+
+---
+
+### 6.5 V1 完成条件
+
+只有同时满足以下条件，CAN V1 才可以冻结。
+
+#### API
+
+* Frame / Filter / Socket / Interface 语义稳定；
+* 无不必要 Config / Manager / Runtime；
+* Interface 保持最小；
+* Socket 无半初始化状态。
+
+#### Correctness
+
+* Standard / Extended 转换正确；
+* RTR 正确；
+* Filter EFF matching 正确；
+* Error Frame 与正常 Frame 分离；
+* Timestamp clock domain 正确；
+* EAGAIN 不作为 Error。
+
+#### Runtime
+
+* 无隐藏线程；
+* 无隐藏 retry；
+* 无隐藏 sleep；
+* 单次 receive 工作 bounded；
+* Event queue bounded；
+* runtime I/O 不主动分配内存。
+
+#### Linux
+
+* 多 Socket 可共享同一 CAN interface；
+* Socket filter 独立；
+* receive-own 行为正确；
+* native errno 保留。
+
+#### Validation
+
+* unit tests 通过；
+* vcan integration 通过；
+* physical CAN 验证通过；
+* representative benchmark 完成；
+* compiler warnings 为零。
+
+---
+
+## 最终边界
+
+模块最终依赖关系：
 
 ```text
-1 command frame / joint / cycle
-1 feedback frame / joint / cycle
+CANopen / Custom Protocol
+          │
+          ▼
+     can::Interface
+          │
+          ▼
+       can::Socket
+          │
+          ▼
+   Linux SocketCAN
 ```
 
-则：
+`can` 与 `realtime` 相互独立：
 
 ```text
-7 × 2 × 500
-=
-7000 frames/s
+can
+    不依赖 realtime
+
+realtime
+    不依赖 can
 ```
 
-这对 1 Mbps Classic CAN 已经是非常高的负载。
+上层可以自由组合：
 
-因此 CAN 层必须提供：
+```cpp
+realtime::PeriodicTask
+can::Socket
+```
+
+但两者都保持独立工具模块定位。
+
+CAN V1 最终希望使用者只需要理解：
 
 ```text
+Frame
+Filter
+Interface
+Socket
+RxInfo
+Event
+State
 Stats
-Timestamp
-BusEvent
-Overflow information
 ```
 
-支持上层评估总线运行状态。
+即可完成基础 CAN 通信。
 
-但：
+如果需要理解：
 
 ```text
-PDO packing
-signal frequency
-SYNC scheduling
-COB-ID priority
+Manager
+Runtime
+Transport
+Backend
+Context
+Session
+Dispatcher
 ```
 
-都属于 CANopen/System，而不是 CAN 模块。
+才能使用 CAN，那么模块已经设计过重。
 
-CAN 自身不承诺：
+如果为了减少类型数量又把：
 
 ```text
-500 Hz control deadline
+Standard / Extended
+Data / Remote
+Frame / Event
 ```
 
-CAN 模块要证明：
+这些真实 CAN 领域概念退化成 bool、flag 或隐式约定，那么模块又被过度简化。
 
-> 在目标总线负载下，SocketCAN I/O 和用户态转换不会成为主要软件瓶颈。
+因此最终原则是：
 
----
-
-### 参考实现
-
-#### Linux SocketCAN
-
-最终事实依据：
-
-```text
-CAN_RAW
-struct can_frame
-CAN_EFF_FLAG
-CAN_RTR_FLAG
-CAN_ERR_FLAG
-CAN_RAW_FILTER
-CAN_RAW_ERR_FILTER
-timestamps
-multiple sockets
-```
-
-#### ros_canopen/socketcan_interface
-
-参考：
-
-```text
-CAN abstraction boundary
-SocketCAN encapsulation
-protocol / transport separation
-```
-
-不复制：
-
-```text
-ROS dependency
-legacy framework
-```
-
-#### CANopenNode
-
-参考：
-
-```text
-CAN driver abstraction
-frame model
-filter model
-```
-
-但 CAN 模块不依赖 CANopenNode。
-
-#### can-utils
-
-用于：
-
-```text
-integration test
-traffic generation
-bus diagnostics
-physical validation
-```
-
----
-
-### 架构不变量
-
-1. `can` 不依赖 CANopen、CiA402、System、ROS2。
-2. V1 只面向 Linux SocketCAN。
-3. V1 以 Classic CAN 为第一目标。
-4. Classic CAN 与 CAN FD 必须使用独立 Frame 类型。
-5. 公共 Frame 不暴露 Linux `struct can_frame`。
-6. Linux `CAN_EFF_FLAG`、`CAN_RTR_FLAG`、`CAN_ERR_FLAG` 不泄漏到上层协议。
-7. `can::Interface` 是上层协议依赖的稳定边界。
-8. `SocketCan` 只负责 Linux SocketCAN backend。
-9. CAN 模块不解析 CANopen COB-ID 或协议 payload。
-10. Frame 必须在进入 kernel TX 前完成 CAN 层合法性验证。
-11. `receive()` 必须区分“当前无数据”和真正 I/O failure。
-12. 普通 Frame 与 Error Frame 必须使用不同语义通路。
-13. Error Frame 必须转换为 `BusEvent`，并同步更新 Status/Stats。
-14. BusEvent 不得被静默丢弃；发生内部事件队列溢出时必须计数。
-15. V1 默认使用 non-blocking SocketCAN。
-16. non-blocking syscall 不等价于 hard realtime-safe。
-17. RX timestamp 必须具有明确 monotonic time-domain 语义。
-18. wall-clock timestamp 不得混入 control timing。
-19. Standard / Extended Filter 必须显式使用 `CAN_EFF_FLAG` 参与 kernel mask 匹配。
-20. Filter API 不表达 CANopen semantics。
-21. BusState 无法确认时必须报告 `Unknown`，不得推测。
-22. `send()` 成功不代表物理发送成功，更不代表远端设备执行成功。
-23. CAN 模块不决定机器人 Safety 行为。
-24. open / close / configure 的生命周期必须由上层序列化。
-25. V1 `receive()` 使用单 RX owner。
-26. V1 `send()` 使用单 TX owner或由上层显式序列化。
-27. 一个 Linux CAN interface 可以同时存在多个 SocketCAN socket。
-28. 禁止全局 `CanManager::instance()`。
-29. CANopen Network 是否共享单个 Interface 属于 CANopen/System ownership 策略。
-30. Status / Stats 只记录 CAN 层事实。
-31. CAN 层不记录 PDO、Heartbeat、SDO、CiA402 等协议状态。
-32. `Result<bool>` 是否优化必须由完整 RX benchmark 决定。
-33. vcan 用于软件行为和 SocketCAN 接口验证。
-34. Physical CAN 用于 arbitration、error、bus-off、overflow 和负载验证。
-35. V1 不为了未来 CAN FD、J1939 或其他协议提前建设通用 Transport Framework。
-36. CAN 模块长期保持轻量 CAN infrastructure 定位。
-
-最终模型：
-
-```text
-               CANopen / Custom Protocol
-                         │
-                         ▼
-                  can::Interface
-                         │
-                         ▼
-                  can::SocketCan
-                         │
-        ┌────────────────┼─────────────────┐
-        ▼                ▼                 ▼
-      Frame           BusEvent         Status/Stats
- protocol data       bus events       aggregate facts
-                         │
-                         ▼
-                  Linux SocketCAN
-                         │
-                         ▼
-                      CAN Bus
-```
-
-CAN 模块最终目标是：
-
-> **提供一个 Linux-only、Classic-CAN-first、Frame 与 BusEvent 语义分离、时间和错误边界明确、支持 non-blocking I/O 和总线诊断，并能独立支撑 CANopen 及其他 CAN 协议的 C++17 SocketCAN 基础模块。**
-
-**CAN V1 的架构与公共语义在上述边界内冻结。后续修改应由真实 CAN FD、硬件时间戳、物理总线测试或明确上层需求驱动，而不是为了构建通用总线框架提前增加抽象。**
+> **减少无价值抽象，不减少实现正确性所需的领域语义；减少重复文档，不减少 Codex 实现所需的行为约束。**
