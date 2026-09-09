@@ -1,0 +1,5 @@
+add_executable(canopen_tests core_test.cpp pdo_test.cpp sdo_test.cpp cia402_test.cpp)
+target_link_libraries(canopen_tests PRIVATE canopen::canopen GTest::gtest_main)
+target_compile_options(canopen_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+include(GoogleTest)
+gtest_add_tests(TARGET canopen_tests TEST_LIST canopen_test_cases)

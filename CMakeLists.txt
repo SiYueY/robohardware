@@ -9,3 +9,4 @@ endif()
 
 add_subdirectory(realtime)
 add_subdirectory(can)
+add_subdirectory(canopen)

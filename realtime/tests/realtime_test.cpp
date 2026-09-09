@@ -22,7 +22,7 @@ TEST(Affinity, InvalidCpu) {
     EXPECT_EQ(realtime::set_affinity(-1).error().code, realtime::ErrorCode::InvalidArgument);
 }
 TEST(PeriodicTask, LifecycleAndStats) {
-    realtime::PeriodicTask task({2ms});
+    realtime::PeriodicTask task({2ms, realtime::Scheduler::Other, 0, std::nullopt, true});
     std::atomic<unsigned> calls{0};
     ASSERT_TRUE(task.start([&](const realtime::CycleInfo&) noexcept { ++calls; }));
     EXPECT_TRUE(task.running());
