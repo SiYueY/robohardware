@@ -567,7 +567,6 @@ struct Event {
     Timestamp timestamp{};
 
     std::uint32_t detail{0};
-    int native_code{0};
 };
 ```
 
@@ -1601,7 +1600,6 @@ struct Event {
     EventType type{EventType::Unknown};
     Timestamp timestamp{};
     std::uint32_t detail{0};
-    int native_code{0};
 };
 
 struct Stats {

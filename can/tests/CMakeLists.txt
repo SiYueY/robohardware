@@ -7,9 +7,8 @@ if(NOT TARGET GTest::gtest_main)
   FetchContent_MakeAvailable(googletest)
 endif()
 
-add_executable(can_tests can_test.cpp)
-target_link_libraries(can_tests PRIVATE GTest::gtest_main)
-target_include_directories(can_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+add_executable(can_tests can_test.cpp can_vcan_test.cpp)
+target_link_libraries(can_tests PRIVATE can::can GTest::gtest_main)
 target_compile_options(can_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 include(GoogleTest)
