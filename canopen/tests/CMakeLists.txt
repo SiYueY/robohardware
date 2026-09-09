@@ -1,4 +1,11 @@
-add_executable(canopen_tests core_test.cpp pdo_test.cpp sdo_test.cpp cia402_test.cpp)
+add_executable(canopen_tests
+  core_test.cpp
+  process_image_test.cpp
+  pdo_test.cpp
+  sdo_test.cpp
+  sync_test.cpp
+  vcan_test.cpp
+  cia402_test.cpp)
 target_link_libraries(canopen_tests PRIVATE canopen::canopen GTest::gtest_main)
 target_compile_options(canopen_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
 include(GoogleTest)

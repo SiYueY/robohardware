@@ -32,6 +32,8 @@ Error abort_error(std::uint8_t n, ObjectKey k, const can::Frame& f) noexcept {
 }
 }  // namespace
 
+SdoClient::TransactionGuard::~TransactionGuard() { network_.end_sdo(node_id_); }
+
 Result<void> SdoServer::process(const can::Frame& q, can::Frame& r) noexcept {
     if (q.size != 8) return Error{ErrorCode::InvalidSdoResponse, node_.id()};
     const auto cs = static_cast<std::uint8_t>(q.data[0]);
@@ -149,20 +151,14 @@ Result<void> SdoServer::process(const can::Frame& q, can::Frame& r) noexcept {
     return {};
 }
 Result<can::Frame> SdoClient::transact(std::uint8_t id, const can::Frame& q, Duration timeout) {
-    ++network_.stats_.sdo_requests;
     auto s = network_.send(q);
     if (!s) return s.error();
-    auto until = std::chrono::steady_clock::now() + timeout;
-    can::Frame r;
-    while (std::chrono::steady_clock::now() < until) {
-        if (network_.take_sdo_response(id, r)) return r;
-        auto p = network_.poll();
-        if (!p) return p.error();
-    }
-    ++network_.stats_.sdo_timeouts;
-    return Error{ErrorCode::Timeout, id};
+    return network_.wait_sdo_response(id, timeout);
 }
 Result<std::vector<std::byte>> SdoClient::upload(std::uint8_t id, ObjectKey k, Duration timeout) {
+    auto active = network_.begin_sdo(id);
+    if (!active) return active.error();
+    TransactionGuard transaction{network_, id};
     can::Frame q{};
     q.id = 0x600 + id;
     q.size = 8;
@@ -208,6 +204,9 @@ Result<std::vector<std::byte>> SdoClient::upload(std::uint8_t id, ObjectKey k, D
 }
 Result<void> SdoClient::download(
     std::uint8_t id, ObjectKey k, const std::vector<std::byte>& v, Duration timeout) {
+    auto active = network_.begin_sdo(id);
+    if (!active) return active.error();
+    TransactionGuard transaction{network_, id};
     can::Frame q{};
     q.id = 0x600 + id;
     q.size = 8;

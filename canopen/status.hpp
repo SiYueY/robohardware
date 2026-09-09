@@ -26,7 +26,7 @@ struct Status {
 struct Stats {
     std::uint64_t rx_frames{0}, tx_frames{0}, rpdo_received{0}, tpdo_sent{0}, sdo_requests{0},
         sdo_aborts{0}, sdo_timeouts{0}, heartbeat_received{0}, heartbeat_timeouts{0},
-        emcy_received{0}, sync_received{0}, sync_sent{0}, decode_errors{0};
+        emcy_received{0}, dropped_events{0}, sync_received{0}, sync_sent{0}, decode_errors{0};
 };
 struct HeartbeatConsumerConfig {
     Duration timeout{};

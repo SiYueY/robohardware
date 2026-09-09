@@ -16,6 +16,7 @@ struct NodeConfig {
 };
 class Node {
 public:
+    using ResetNodeHook = void (*)(void*) noexcept;
     explicit Node(NodeConfig config);
     Result<void> initialize();
     std::uint8_t id() const noexcept { return config_.node_id; }
@@ -35,9 +36,11 @@ public:
         std::size_t index, const can::Frame& frame, MonotonicTimestamp now) noexcept;
     Result<void> receive_tpdo(
         std::size_t index, const can::Frame& frame, MonotonicTimestamp now) noexcept;
+    Result<void> commit_synchronous_rpdos() noexcept;
     void receive_heartbeat(NmtState state, MonotonicTimestamp now) noexcept;
     void receive_emcy(const can::Frame& frame, MonotonicTimestamp now) noexcept;
-    void receive_nmt(NmtCommand command) noexcept;
+    bool receive_nmt(NmtCommand command, MonotonicTimestamp now) noexcept;
+    void reset_communication(MonotonicTimestamp now) noexcept;
     bool heartbeat_timed_out(MonotonicTimestamp now) const noexcept;
     void arm_heartbeat_monitor(MonotonicTimestamp now) noexcept;
     void mark_heartbeat_timeout() noexcept {
@@ -46,6 +49,11 @@ public:
     }
     bool should_produce_heartbeat(MonotonicTimestamp now) noexcept;
     NmtState nmt_state() const noexcept { return status_.nmt_state; }
+    /// Installs a non-owning, non-throwing hook before the node starts running.
+    void set_reset_node_hook(ResetNodeHook hook, void* context = nullptr) noexcept {
+        reset_node_hook_ = hook;
+        reset_node_context_ = context;
+    }
     Result<void> sdo_read(ObjectKey key, std::byte* data, std::size_t& size) const noexcept {
         return dictionary_.read(key, data, size);
     }
@@ -57,9 +65,13 @@ private:
     NodeConfig config_;
     ObjectDictionary dictionary_;
     ProcessImage image_;
+    ProcessImage pending_image_;
     std::vector<PdoPlan> rpdos_, tpdos_;
+    std::array<bool, 8> pending_rpdos_{};
     NodeStatus status_{};
     MonotonicTimestamp last_produced_{};
     bool heartbeat_monitoring_{false};
+    ResetNodeHook reset_node_hook_{nullptr};
+    void* reset_node_context_{nullptr};
 };
 }  // namespace canopen

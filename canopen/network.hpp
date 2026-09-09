@@ -1,6 +1,7 @@
 #pragma once
 #include "can/interface.hpp"
 #include "canopen/node.hpp"
+#include "canopen/sync.hpp"
 #include <array>
 #include <memory>
 #include <vector>
@@ -53,13 +54,11 @@ public:
     /// Non-RT receive path. It can dispatch SDO and must not be used by a cyclic RT loop.
     Result<bool> poll() noexcept;
     Result<void> send(const can::Frame& frame) noexcept;
-    Result<void>
-    send_sync() noexcept;  /// Sends all type-1 TPDOs; no thread or scheduler is created.
-    Result<void> send_synchronous_tpdos() noexcept;
+    /// Emits SYNC. Receiving networks commit RPDOs and transmit due TPDOs.
+    Result<void> send_sync() noexcept;
     Result<void> send_nmt(NmtCommand command, std::uint8_t node_id = 0) noexcept;
     Node* node(std::uint8_t id) noexcept;
     const Node* node(std::uint8_t id) const noexcept;
-    bool take_sdo_response(std::uint8_t node_id, can::Frame& frame) noexcept;
     bool try_pop_emcy(EmcyEvent& event) noexcept;
     Status status() const noexcept;
     Stats stats() const noexcept { return stats_; }
@@ -69,18 +68,27 @@ public:
 private:
     friend class SdoClient;
     Result<void> dispatch(const can::Frame&, MonotonicTimestamp) noexcept;
+    Result<void> on_sync() noexcept;
+    Result<void> send_synchronous_tpdos() noexcept;
+    Result<void> send_bootup(const Node& node) noexcept;
+    bool take_sdo_response(std::uint8_t node_id, can::Frame& frame) noexcept;
+    Result<can::Frame> wait_sdo_response(std::uint8_t node_id, Duration timeout) noexcept;
+    Result<void> begin_sdo(std::uint8_t node_id) noexcept;
+    void end_sdo(std::uint8_t node_id) noexcept;
     std::shared_ptr<can::Interface> interface_;
     std::vector<std::unique_ptr<Node>> nodes_;
+    std::array<Node*, 128> nodes_by_id_{};
     std::array<bool, 128> serves_sdo_{};
     RouteTable routes_;
     std::array<can::Frame, 128> sdo_responses_{};
     std::array<bool, 128> has_sdo_response_{};
+    std::array<bool, 128> sdo_active_{};
     std::vector<std::unique_ptr<SdoServer>> sdo_servers_;
     std::array<SdoServer*, 128> sdo_server_by_node_{};
     static constexpr std::size_t kEmcyCapacity = 16;
     std::array<EmcyEvent, kEmcyCapacity> emcy_events_{};
     std::size_t emcy_read_{0}, emcy_write_{0};
-    std::uint64_t sync_count_{0};
+    Sync sync_{};
     Stats stats_{};
     bool initialized_{false}, running_{false};
 };

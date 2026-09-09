@@ -20,18 +20,21 @@ void put(std::array<std::byte, 8>& d, std::uint8_t off, std::uint8_t n, std::uin
 }
 }  // namespace
 Result<void> PdoPlan::build(
-    const PdoConfig& config, ObjectDictionary& dictionary, ProcessImage& image) {
+    const PdoConfig& config, const ObjectDictionary& dictionary, ProcessImage& image) {
     if (frozen_ || config.cob_id > 0x7FF || config.mappings.empty() ||
-        config.mappings.size() > kMaxMappings ||
-        (config.transmission_type > 240 && config.transmission_type < 254))
-        return Error{ErrorCode::InvalidPdoMapping};
+        config.mappings.size() > kMaxMappings || config.transmission_type == 0 ||
+        config.transmission_type > 240)
+        return Error{
+            config.transmission_type == 0 || config.transmission_type > 240
+                ? ErrorCode::UnsupportedTransmissionType
+                : ErrorCode::InvalidPdoMapping};
     std::uint8_t offset = 0;
     for (const auto& m : config.mappings) {
         auto object = dictionary.find(m.object);
         if (!object || m.bit_length == 0 || m.bit_length != object.value()->bit_length ||
-            offset + m.bit_length > 64)
+            m.is_signed != object.value()->is_signed || offset + m.bit_length > 64)
             return Error{ErrorCode::InvalidPdoMapping, 0, m.object.index, m.object.subindex};
-        auto slot = image.add(m.bit_length, m.is_signed);
+        auto slot = image.add(m.object, m.bit_length, m.is_signed);
         if (!slot) return slot.error();
         entries_[count_++] = {slot.value(), m.bit_length, m.is_signed, offset};
         offset = static_cast<std::uint8_t>(offset + m.bit_length);
@@ -63,6 +66,15 @@ Result<void> PdoPlan::encode(const ProcessImage& image, can::Frame& frame) const
         if (!value) return Error{ErrorCode::PdoEncodeError};
         put(frame.data, entries_[i].bit_offset, entries_[i].bit_length,
             value.value() & mask(entries_[i].bit_length));
+    }
+    return {};
+}
+Result<void> PdoPlan::commit(const ProcessImage& pending, ProcessImage& active) const noexcept {
+    if (!frozen_) return Error{ErrorCode::InvalidState};
+    for (std::uint8_t i = 0; i < count_; ++i) {
+        auto value = pending.read(entries_[i].slot);
+        if (!value || !active.write(entries_[i].slot, value.value()))
+            return Error{ErrorCode::PdoDecodeError};
     }
     return {};
 }

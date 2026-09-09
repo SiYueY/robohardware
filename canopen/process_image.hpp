@@ -1,16 +1,30 @@
 #pragma once
 #include "canopen/error.hpp"
+#include "canopen/object_dictionary.hpp"
 #include <array>
 #include <cstdint>
+#include <optional>
 namespace canopen {
+using ProcessSlot = std::uint8_t;
 class ProcessImage {
 public:
     static constexpr std::size_t kMaxValues = 64;
-    Result<std::uint8_t> add(std::uint8_t bit_length, bool is_signed) noexcept {
-        if (frozen_ || bit_length == 0 || bit_length > 64 || count_ == kMaxValues)
-            return Error{ErrorCode::InvalidArgument};
-        slots_[count_] = {bit_length, is_signed, 0};
+    Result<ProcessSlot> add(ObjectKey key, std::uint8_t bit_length, bool is_signed) noexcept {
+        if (frozen_ || bit_length == 0 || bit_length > 64) return Error{ErrorCode::InvalidArgument};
+        if (auto existing = find(key)) {
+            const auto& slot = slots_[*existing];
+            if (slot.bits != bit_length || slot.is_signed != is_signed)
+                return Error{ErrorCode::InvalidObject, 0, key.index, key.subindex};
+            return *existing;
+        }
+        if (count_ == kMaxValues) return Error{ErrorCode::InvalidArgument};
+        slots_[count_] = {key, bit_length, is_signed, 0};
         return count_++;
+    }
+    std::optional<ProcessSlot> find(ObjectKey key) const noexcept {
+        for (ProcessSlot i = 0; i < count_; ++i)
+            if (slots_[i].key == key) return i;
+        return std::nullopt;
     }
     Result<void> freeze() noexcept {
         frozen_ = true;
@@ -42,6 +56,7 @@ public:
 
 private:
     struct Slot {
+        ObjectKey key;
         std::uint8_t bits;
         bool is_signed;
         std::uint64_t raw;

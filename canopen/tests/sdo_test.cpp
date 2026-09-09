@@ -6,23 +6,6 @@
 #include <deque>
 
 namespace {
-class LoopbackCan final : public can::Interface {
-public:
-    can::Result<void> send(const can::Frame& frame) noexcept override {
-        frames.push_back(frame);
-        return {};
-    }
-    can::Result<bool> receive(can::Frame& frame, can::RxInfo& info) noexcept override {
-        if (frames.empty()) return false;
-        frame = frames.front();
-        frames.pop_front();
-        info.received_at = std::chrono::steady_clock::now();
-        return true;
-    }
-    bool try_pop_event(can::Event&) noexcept override { return false; }
-    std::deque<can::Frame> frames;
-};
-
 class EndpointCan final : public can::Interface {
 public:
     can::Result<void> send(const can::Frame& frame) noexcept override {
@@ -60,8 +43,14 @@ TEST(SDO, ServerExpeditedReadWriteAndAbort) {
 }
 
 TEST(SDO, ClientUsesSegmentedTransferOverCanInterface) {
-    auto bus = std::make_shared<LoopbackCan>();
-    canopen::Network network(bus);
+    auto master_bus = std::make_shared<EndpointCan>();
+    auto slave_bus = std::make_shared<EndpointCan>();
+    master_bus->peer_ = slave_bus.get();
+    slave_bus->peer_ = master_bus.get();
+    canopen::Network master(master_bus);
+    canopen::Network slave(slave_bus);
+    ASSERT_TRUE(
+        master.add_node(std::make_unique<canopen::Node>(canopen::NodeConfig{1, {}, {}, {}, {}})));
     auto node = std::make_unique<canopen::Node>(canopen::NodeConfig{1, {}, {}, {}, {}});
     ASSERT_TRUE(node->dictionary().add(
         {{0x2001, 0},
@@ -70,9 +59,13 @@ TEST(SDO, ClientUsesSegmentedTransferOverCanInterface) {
          canopen::ObjectAccess::ReadWrite,
          {std::byte{0}, std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5},
           std::byte{6}, std::byte{7}}}));
-    ASSERT_TRUE(network.add_slave_node(std::move(node)));
-    ASSERT_TRUE(network.initialize());
-    canopen::SdoClient client(network);
+    ASSERT_TRUE(slave.add_slave_node(std::move(node)));
+    ASSERT_TRUE(master.initialize());
+    ASSERT_TRUE(slave.initialize());
+    ASSERT_TRUE(master.start());
+    ASSERT_TRUE(slave.start());
+    slave_bus->on_frame = [&slave] { EXPECT_TRUE(slave.poll()); };
+    canopen::SdoClient client(master);
     const std::vector<std::byte> expected{std::byte{7}, std::byte{6}, std::byte{5}, std::byte{4},
                                           std::byte{3}, std::byte{2}, std::byte{1}, std::byte{0}};
     ASSERT_TRUE(client.download(1, {0x2001, 0}, expected, std::chrono::milliseconds{20}));
@@ -124,7 +117,6 @@ TEST(MasterSlave, SharesProtocolComponentsAcrossAnInMemoryCanBus) {
 
     ASSERT_TRUE(slave_node->process_image().write(0, 0x1234));
     ASSERT_TRUE(master.network().send_sync());
-    ASSERT_TRUE(slave_network.send_synchronous_tpdos());
     ASSERT_TRUE(master.network().poll());
     EXPECT_EQ(master.network().node(1)->process_image().read(0).value(), 0x1234U);
 
