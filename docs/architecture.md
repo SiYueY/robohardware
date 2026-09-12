@@ -89,7 +89,11 @@ robo-hardware/
 |   |-- project-charter.md
 |   |-- v1-requirements.md
 |   |-- architecture.md
-|   `-- realtime/
+|   |-- realtime/
+|       |-- README.md
+|       |-- api.md
+|       `-- implementation.md
+|   `-- serial/
 |       |-- README.md
 |       |-- api.md
 |       `-- implementation.md

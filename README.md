@@ -9,15 +9,18 @@ transport 和 SocketCAN RAW transport。各组件独立构建、独立安装、�
 
 当前 repository 是组件组合与开发编排容器。每个 component 使用自己的 public identity，
 不绑定 repository topology；Realtime 使用 `realtime` namespace、`<realtime/...>` include
-root、`realtime::realtime` target 和 `realtime` package。
+root、`realtime::realtime` target 和 `realtime` package；Serial 使用 `serial` namespace、
+`<serial/...>` include root、`serial::serial` target 和 `serial` package。
 
-Realtime Interface 和 Implementation Design 已冻结，可以进入 production implementation；
-Serial 和 CAN 尚未进入 Interface Design。
+Realtime 的 Interface 和 Implementation Design 已冻结；Serial 的 Interface 和
+Implementation Design 已冻结，尚未进入 production implementation。CAN 尚未进入
+Interface Design。
 
 ## 设计文档
 
 - [项目级文档](docs/README.md)
 - [Realtime 组件文档](docs/realtime/README.md)
+- [Serial 组件文档](docs/serial/README.md)
 
 ## License
 

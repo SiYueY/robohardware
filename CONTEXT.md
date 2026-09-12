@@ -22,3 +22,10 @@ topology.
 `realtime` is an independent Linux C++17 realtime-primitives library. Its public identity is
 the `realtime` namespace, `<realtime/...>` include root, `realtime::realtime` CMake target,
 and `realtime` package.
+
+## Serial
+
+`serial` is an independent Linux C++17 TTY byte-stream transport library. Its public identity
+is the `serial` namespace, `<serial/...>` include root, `serial::serial` CMake target, and
+`serial` package. It has no production dependency on `realtime`; applications compose the two
+components while retaining independent ownership and timing contracts.

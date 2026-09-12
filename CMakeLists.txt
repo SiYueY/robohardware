@@ -11,3 +11,7 @@ option(CAN_BUILD "Build the can component" OFF)
 if(REALTIME_BUILD)
   add_subdirectory(realtime)
 endif()
+
+if(SERIAL_BUILD)
+  add_subdirectory(serial)
+endif()
