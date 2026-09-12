@@ -73,7 +73,6 @@ option(REALTIME_ENABLE_STRESS_TESTS
 
 add_library(
   realtime
-  STATIC
     src/clock.cpp
     src/current_thread.cpp
     src/monotonic_time_linux.cpp
@@ -100,6 +99,15 @@ target_include_directories(
 )
 
 if(BUILD_TESTING)
+  configure_file(
+    tests/consumer/consumer_test.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/consumer_test.cmake
+    @ONLY
+  )
+  add_test(
+    NAME realtime_consumer_install_test
+    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/consumer_test.cmake
+  )
   add_library(
     realtime_controlled_time
     STATIC
@@ -218,9 +226,8 @@ if(BUILD_TESTING)
   add_test(NAME realtime_queue_state_model_test COMMAND realtime_queue_state_model_test)
   set_tests_properties(realtime_queue_state_model_test PROPERTIES LABELS model)
 
-  add_executable(realtime_buffer_state_model_test tests/model/buffer_state_model_test.cpp)
-  add_test(NAME realtime_buffer_state_model_test COMMAND realtime_buffer_state_model_test)
-  set_tests_properties(realtime_buffer_state_model_test PROPERTIES LABELS model)
+  # The former four-slot Buffer model is intentionally not built: Buffer now
+  # uses a different three-slot exchange protocol and requires a new model.
 
   add_library(
     realtime_public_headers_compile_test

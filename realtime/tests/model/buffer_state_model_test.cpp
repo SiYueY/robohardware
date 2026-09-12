@@ -4,8 +4,9 @@
 
 namespace {
 
-// This is an independent finite-state model of the Buffer four-slot protocol
-// from docs/realtime/implementation.md §16. It deliberately does not include buffer.hpp.
+// Historical model of the rejected four-slot protocol. It is retained only as
+// review evidence and is deliberately excluded from the CMake test graph;
+// Buffer now uses the three-slot exchange protocol documented in §16.0.
 struct State {
   std::array<std::array<bool, 2>, 2> live{};
   std::array<std::array<int, 2>, 2> values{};

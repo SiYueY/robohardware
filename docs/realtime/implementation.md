@@ -1432,9 +1432,31 @@ orders 验证算法可编译并通过 stress。最终证据还必须包含逐操
   ordering；
 - **预先 cache-line padding**：性能收益尚未测量，且扩大 object layout。
 
-## 16. `Buffer<T>` Four-slot Publication
+## 16. `Buffer<T>` publication protocol
 
-状态：已冻结
+状态：已替换
+
+> 本节原 four-slot load/store protocol 已被并发审查否决：writer 可在 reader 宣告读取
+> 前选择同一 pair，并随后覆写 reader 正在复制的 slot。以下 §16.1–§16.6 不再是 V1
+> 实现规格，仅保留为被否决设计的记录。V1 采用下列三槽 atomic-exchange protocol。
+> 相应的 historical four-slot state-model test 不参与 V1 test graph；三槽算法当前以
+> production specialization stress 与 memory-model review 验证。
+
+### 16.0 Replacement: three-slot exchange publication
+
+三个 inline raw slots 分别由 writer、reader 和 published state 持有。writer 在自己的
+slot 构造 payload 后，以一次 `atomic<uint32_t>::exchange` 发布并取得旧 published slot；
+reader 只在观察到新的 publication sequence 时 exchange 自己的已读 slot，并取得完整
+publication 的 slot。reader 没有新 sequence 时直接复制它已拥有的 slot。
+
+因此 exchange 的返回 slot 已由对方 relinquish：writer 从不写 reader 当前 slot，reader
+从不读 writer 当前 slot。publication state 使用 valid bit、slot index 和 writer-owned
+sequence；sequence 只用于 reader 判断是否有新 publication，不进入 public API。
+
+write/read 各进行固定数量的 library-level atomic 操作和一次 payload copy，不含
+library retry loop、allocation、mutex 或 syscall。`exchange` 在部分架构可由 LL/SC retry
+实现；本模块不再将 Buffer 宣传为无底层 retry、wait-free 或具有硬件级执行时间上界。
+`is_always_lock_free` 仍是必要平台条件。
 
 ### 16.1 Algorithm choice
 

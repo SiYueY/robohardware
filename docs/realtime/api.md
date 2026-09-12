@@ -877,8 +877,10 @@ Interface。implementation 必须通过算法审查证明上述 slot ownership �
 - 固定 storage 全部包含在 Buffer 对象自身；
 - 构造、write 和 read 均不动态分配；
 - 单次操作只执行有界数量的 payload copy 和 atomic operation；
-- 不使用 mutex、condition variable、syscall 或隐藏 retry loop；
+- 不使用 mutex、condition variable、syscall 或 library-level hidden retry loop；
 - implementation 使用的 atomic 类型必须在支持平台 always lock-free；
+- Buffer 的 atomic exchange 在某些 CPU 上可由带 retry 的硬件原语实现；RT-callable
+  只承诺固定的 library-level API 步骤，不承诺底层指令无 retry；
 - 单次操作复杂度为 `O(1)`，实际成本包含 `sizeof(T)` 的复制成本；
 - library 不保证 payload 指向的间接资源具有确定性。
 
