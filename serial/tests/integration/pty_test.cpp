@@ -52,6 +52,11 @@ int main() {
   assert(attributes.c_cc[VMIN] == 0 && attributes.c_cc[VTIME] == 0);
   assert(::close(inspection_fd) == 0);
 
+  const auto no_input =
+      port.read(received, sizeof(received), serial::Timeout::after(std::chrono::milliseconds(10)));
+  assert(no_input.error == std::make_error_code(std::errc::timed_out));
+
+  assert(::write(master, input, sizeof(input) - 1) == 3);
   assert(port.flush(serial::FlushDirection::Input) == std::error_code{});
   assert(port.close() == std::error_code{});
   assert(::close(master) == 0);

@@ -12,8 +12,8 @@ transport 和 SocketCAN RAW transport。各组件独立构建、独立安装、�
 root、`realtime::realtime` target 和 `realtime` package；Serial 使用 `serial` namespace、
 `<serial/...>` include root、`serial::serial` target 和 `serial` package。
 
-Realtime 的 Interface 和 Implementation Design 已冻结；Serial 的 Interface 和
-Implementation Design 已冻结，尚未进入 production implementation。CAN 尚未进入
+Realtime 与 Serial 的 Interface、Implementation Design 和 production implementation
+均已完成；Serial 当前为 software-validated，尚未完成真实硬件验证。CAN 尚未进入
 Interface Design。
 
 ## 设计文档

@@ -18,6 +18,10 @@ serial::PortConfig configuration() {
 }  // namespace
 
 int main() {
+  int child_ready[2]{};
+  int parent_ready[2]{};
+  assert(pipe(child_ready) == 0);
+  assert(pipe(parent_ready) == 0);
   const int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
   assert(master >= 0);
   assert(grantpt(master) == 0);
@@ -28,18 +32,33 @@ int main() {
   const pid_t child = fork();
   assert(child >= 0);
   if (child == 0) {
-    static_cast<void>(::write(master, "abc", 3));
+    assert(::close(child_ready[0]) == 0);
+    assert(::close(parent_ready[1]) == 0);
+    const char ready = 'r';
+    assert(::write(child_ready[1], &ready, 1) == 1);
+    char start{};
+    assert(::read(parent_ready[0], &start, 1) == 1 && start == 's');
+    usleep(50000);
+    assert(::write(master, "abc", 3) == 3);
     usleep(20000);
-    static_cast<void>(::write(master, "de", 2));
+    assert(::write(master, "de", 2) == 2);
     usleep(100000);
-    static_cast<void>(::close(master));
+    assert(::close(master) == 0);
     _exit(0);
   }
 
+  assert(::close(child_ready[1]) == 0);
+  assert(::close(parent_ready[0]) == 0);
   assert(::close(master) == 0);
   serial::Port port;
   assert(port.open(slave_path, configuration()) == std::error_code{});
+  char ready{};
+  assert(::read(child_ready[0], &ready, 1) == 1 && ready == 'r');
+  const char start = 's';
+  assert(::write(parent_ready[1], &start, 1) == 1);
   std::byte data[8]{};
+  const auto timeout = port.read(data, sizeof(data), serial::Timeout::after(std::chrono::milliseconds(10)));
+  assert(timeout.error == std::make_error_code(std::errc::timed_out));
   const auto first = port.read(data, sizeof(data), serial::Timeout::after(std::chrono::seconds(1)));
   assert(first.error == std::error_code{} && first.bytes_transferred == 3);
   assert(std::memcmp(data, "abc", 3) == 0);
@@ -49,6 +68,8 @@ int main() {
   const auto disconnected = port.read(data, sizeof(data), serial::Timeout::after(std::chrono::seconds(1)));
   assert(disconnected.error == serial::make_error_code(serial::Error::DeviceDisconnected));
   assert(port.close() == std::error_code{});
+  assert(::close(child_ready[0]) == 0);
+  assert(::close(parent_ready[1]) == 0);
   int status = 0;
   assert(waitpid(child, &status, 0) == child);
   assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);

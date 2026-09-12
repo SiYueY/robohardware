@@ -51,6 +51,12 @@ int main() {
   test::set_read_result(-1, EAGAIN);
   assert_error(port.read(bytes, sizeof(bytes), Timeout::immediate()).error,
                std::make_error_code(std::errc::resource_unavailable_try_again));
+  test::set_read_result(-1, EINTR);
+  assert_error(port.read(bytes, sizeof(bytes), Timeout::immediate()).error,
+               std::error_code(EINTR, std::system_category()));
+  test::set_read_result(0);
+  assert_error(port.read(bytes, sizeof(bytes), Timeout::immediate()).error,
+               make_error_code(Error::DeviceDisconnected));
   test::set_write_result(2);
   const auto partial = port.write(bytes, sizeof(bytes), Timeout::immediate());
   assert(partial.bytes_transferred == 2);

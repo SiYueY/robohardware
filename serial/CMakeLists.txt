@@ -33,6 +33,9 @@ target_include_directories(
 set_target_properties(serial PROPERTIES CXX_EXTENSIONS OFF EXPORT_NAME serial)
 
 if(BUILD_TESTING)
+  function(serial_enable_test_assertions target)
+    target_compile_options(${target} PRIVATE -UNDEBUG)
+  endfunction()
   add_library(
     serial_public_headers_compile_test
     OBJECT
@@ -56,7 +59,7 @@ if(BUILD_TESTING)
   )
   target_compile_features(serial_unit_test PRIVATE cxx_std_17)
   target_compile_definitions(serial_unit_test PRIVATE _GNU_SOURCE)
-  target_compile_options(serial_unit_test PRIVATE -UNDEBUG)
+  serial_enable_test_assertions(serial_unit_test)
   target_include_directories(
     serial_unit_test
     PRIVATE
@@ -68,12 +71,12 @@ if(BUILD_TESTING)
 
   add_executable(serial_integration_test tests/integration/pty_test.cpp)
   target_link_libraries(serial_integration_test PRIVATE serial::serial)
-  target_compile_options(serial_integration_test PRIVATE -UNDEBUG)
+  serial_enable_test_assertions(serial_integration_test)
   add_test(NAME serial.integration.pty COMMAND serial_integration_test)
 
   add_executable(serial_simulator_test tests/simulators/device_simulator_test.cpp)
   target_link_libraries(serial_simulator_test PRIVATE serial::serial)
-  target_compile_options(serial_simulator_test PRIVATE -UNDEBUG)
+  serial_enable_test_assertions(serial_simulator_test)
   add_test(NAME serial.simulator.device_behavior COMMAND serial_simulator_test)
 
   configure_file(
