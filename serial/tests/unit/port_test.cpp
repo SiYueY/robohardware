@@ -22,6 +22,9 @@ void assert_error(const std::error_code& actual, const std::error_code& expected
 
 int main() {
   using namespace serial;
+  const std::error_code already_open = Error::PortAlreadyOpen;
+  assert(already_open);
+  assert(already_open.value() != 0);
   test::reset_adapter();
   std::byte bytes[4]{};
 

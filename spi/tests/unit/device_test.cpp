@@ -214,30 +214,56 @@ void test_configuration_stage_failures() {
   Device mode_write;
   assert_error(mode_write.open("/dev/controlled", options()),
                std::error_code(EIO, std::system_category()));
+  assert_operations({test::Operation::Open, test::Operation::ReadMode,
+                     test::Operation::ReadBits, test::Operation::ReadSpeed,
+                     test::Operation::WriteMode, test::Operation::WriteMode,
+                     test::Operation::Close});
 
   test::reset_adapter();
   test::set_result_on_call(test::Operation::ReadMode, 2, -1, EIO);
   Device mode_read;
   assert_error(mode_read.open("/dev/controlled", options()),
                std::error_code(EIO, std::system_category()));
+  assert_operations({test::Operation::Open, test::Operation::ReadMode,
+                     test::Operation::ReadBits, test::Operation::ReadSpeed,
+                     test::Operation::WriteMode, test::Operation::ReadMode,
+                     test::Operation::WriteMode, test::Operation::Close});
 
   test::reset_adapter();
   test::set_result(test::Operation::WriteBits, -1, EIO);
   Device bits_write;
   assert_error(bits_write.open("/dev/controlled", options()),
                std::error_code(EIO, std::system_category()));
+  assert_operations({test::Operation::Open, test::Operation::ReadMode,
+                     test::Operation::ReadBits, test::Operation::ReadSpeed,
+                     test::Operation::WriteMode, test::Operation::ReadMode,
+                     test::Operation::WriteBits, test::Operation::WriteBits,
+                     test::Operation::WriteMode, test::Operation::Close});
 
   test::reset_adapter();
   test::set_result_on_call(test::Operation::ReadBits, 2, -1, EIO);
   Device bits_read;
   assert_error(bits_read.open("/dev/controlled", options()),
                std::error_code(EIO, std::system_category()));
+  assert_operations({test::Operation::Open, test::Operation::ReadMode,
+                     test::Operation::ReadBits, test::Operation::ReadSpeed,
+                     test::Operation::WriteMode, test::Operation::ReadMode,
+                     test::Operation::WriteBits, test::Operation::ReadBits,
+                     test::Operation::WriteBits, test::Operation::WriteMode,
+                     test::Operation::Close});
 
   test::reset_adapter();
   test::set_result(test::Operation::WriteSpeed, -1, EIO);
   Device speed_write;
   assert_error(speed_write.open("/dev/controlled", options()),
                std::error_code(EIO, std::system_category()));
+  assert_operations({test::Operation::Open, test::Operation::ReadMode,
+                     test::Operation::ReadBits, test::Operation::ReadSpeed,
+                     test::Operation::WriteMode, test::Operation::ReadMode,
+                     test::Operation::WriteBits, test::Operation::ReadBits,
+                     test::Operation::WriteSpeed, test::Operation::WriteSpeed,
+                     test::Operation::WriteBits, test::Operation::WriteMode,
+                     test::Operation::Close});
 
   test::reset_adapter();
   test::set_max_speed_hz(1'000'000);
@@ -247,6 +273,13 @@ void test_configuration_stage_failures() {
                std::error_code(EIO, std::system_category()));
   assert(test::current_max_speed_hz() == 1'000'000);
   assert(!speed_read.is_open());
+  assert_operations({test::Operation::Open, test::Operation::ReadMode,
+                     test::Operation::ReadBits, test::Operation::ReadSpeed,
+                     test::Operation::WriteMode, test::Operation::ReadMode,
+                     test::Operation::WriteBits, test::Operation::ReadBits,
+                     test::Operation::WriteSpeed, test::Operation::ReadSpeed,
+                     test::Operation::WriteSpeed, test::Operation::WriteBits,
+                     test::Operation::WriteMode, test::Operation::Close});
 }
 
 void test_transfer() {
@@ -266,6 +299,15 @@ void test_transfer() {
   assert_error(device.transfer(bytes, nullptr, std::numeric_limits<std::size_t>::max()),
                std::make_error_code(std::errc::value_too_large));
   assert(test::operation_count() == calls_after_open);
+  constexpr auto kMaximumTransferSize =
+      static_cast<std::size_t>(std::numeric_limits<int>::max());
+  test::set_result(test::Operation::Transfer,
+                   static_cast<long>(kMaximumTransferSize));
+  assert_error(device.transfer(bytes, nullptr, kMaximumTransferSize), {});
+  assert(test::operation_count() == calls_after_open + 1);
+  assert_error(device.transfer(bytes, nullptr, kMaximumTransferSize + 1),
+               std::make_error_code(std::errc::value_too_large));
+  assert(test::operation_count() == calls_after_open + 1);
 
   test::set_result(test::Operation::Transfer, sizeof(bytes));
   assert_error(device.transfer(bytes, nullptr, sizeof(bytes)), {});
@@ -276,7 +318,7 @@ void test_transfer() {
   assert(tx_only.speed_hz == 0 && tx_only.bits_per_word == 0 && tx_only.delay_usecs == 0);
   assert(tx_only.cs_change == 0 && tx_only.tx_nbits == 0 && tx_only.rx_nbits == 0);
   assert(tx_only.word_delay_usecs == 0);
-  assert(test::operation_count() == calls_after_open + 1);
+  assert(test::operation_count() == calls_after_open + 2);
 
   test::set_result(test::Operation::Transfer, sizeof(bytes));
   assert_error(device.transfer(bytes, bytes, sizeof(bytes)), {});

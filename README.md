@@ -4,16 +4,17 @@ robo-hardware 是面向 Linux 机器人与工业设备驱动开发的现代 C++1
 低层基础组件库族。
 
 项目计划提供确定性执行基础、RT/NRT 数据交换原语、UART/RS-485
-transport 和 SocketCAN RAW transport。各组件独立构建、独立安装、独立使用，
+transport、Linux spidev SPI transport 和 SocketCAN RAW transport。各组件独立构建、独立安装、独立使用，
 不依赖 ROS，也不包含设备业务逻辑。
 
 当前 repository 是组件组合与开发编排容器。每个 component 使用自己的 public identity，
 不绑定 repository topology；Realtime 使用 `realtime` namespace、`<realtime/...>` include
-root、`realtime::realtime` target 和 `realtime` package；Serial 使用 `serial` namespace、
-`<serial/...>` include root、`serial::serial` target 和 `serial` package。
+root、`realtime::realtime` target 和 `realtime` package；Serial 与 SPI 分别使用 `serial`、
+`spi` namespace、`<serial/...>`、`<spi/...>` include root、`serial::serial`、`spi::spi`
+target 和对应 package。
 
-Realtime 与 Serial 的 Interface、Implementation Design 和 production implementation
-均已完成；两者当前均为 software-validated，尚未完成真实硬件验证。CAN 尚未进入
+Realtime、Serial 与 SPI 的 Interface、Implementation Design 和 production implementation
+均已完成；三者当前均为 software-validated，尚未完成真实硬件验证。CAN 尚未进入
 Interface Design。
 
 ## 设计文档
@@ -21,6 +22,7 @@ Interface Design。
 - [项目级文档](docs/README.md)
 - [Realtime 组件文档](docs/realtime/README.md)
 - [Serial 组件文档](docs/serial/README.md)
+- [SPI 组件文档](docs/spi/README.md)
 
 ## License
 

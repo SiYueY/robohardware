@@ -21,7 +21,7 @@ CMake target: serial::serial
 package:      serial
 ```
 
-`serial` 不依赖 `realtime`、`can` 或未来的 `canopen`。
+`serial` 不依赖 `realtime`、`spi`、`can` 或未来的 `canopen`。
 
 ## 2. 范围与排除项
 
@@ -58,7 +58,7 @@ allocation 替代错误报告。
 namespace serial {
 
 enum class Error {
-  PortAlreadyOpen,
+  PortAlreadyOpen = 1,
   PortNotOpen,
   DeviceDisconnected,
   UnsupportedConfiguration,

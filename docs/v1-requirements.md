@@ -1,8 +1,8 @@
 # robo-hardware V1 需求规格
 
-状态：草案，需求边界已基线化，公共 API 尚未设计
+状态：草案，需求边界已基线化；尚未实现的组件公共 API 仍待设计
 
-最后更新：2026-09-12
+最后更新：2026-09-15
 
 ## 1. 文档目的
 
@@ -18,11 +18,12 @@
 
 ## 2. V1 范围
 
-V1 包含三个独立分发组件，每个组件对应一个 production library：
+V1 包含四个独立分发组件，每个组件对应一个 production library：
 
 1. `realtime`：确定性执行基础和 RT/NRT 数据交换原语；
 2. `serial`：Linux UART/RS-485 transport；
-3. `can`：Linux SocketCAN RAW transport。
+3. `spi`：Linux spidev synchronous SPI-transaction transport；
+4. `can`：Linux SocketCAN RAW transport。
 
 V1 不包含 CANopen。CANopen 必须作为 transport 稳定后的独立里程碑设计和
 验证。
@@ -73,7 +74,7 @@ V1 不得建立所有组件共同依赖的 `core`、`common` 或 `platform` 库�
 
 ### 3.5 线程与资源所有权
 
-- Serial/CAN 连接句柄必须是 move-only；
+- Serial/SPI/CAN 连接句柄必须是 move-only；
 - 一个连接句柄必须由一个线程独占使用；
 - 同一句柄不保证并发调用安全；
 - 库不得通过隐藏 mutex 提供表面线程安全；
@@ -227,14 +228,37 @@ V1 不提供：
 - 跨平台串口；
 - 厂商硬件 workaround。
 
-## 6. CAN V1
+## 6. SPI V1
 
 ### 6.1 定位
+
+`spi` 是 Linux spidev synchronous SPI-transaction transport。它负责一个已由系统配置的
+`/dev/spidevB.C` endpoint 的 lifecycle、open-time default configuration 和单段同步传输，
+不负责 controller、peripheral 或协议语义。
+
+### 6.2 生命周期、配置与传输
+
+V1 必须支持：
+
+- 按 spidev 路径打开、显式关闭和 RAII 清理；
+- move-only ownership；
+- 在 `open()` 时设置并回读 mode、maximum speed、bits per word 和 bit order；
+- 保留不属于组件的 native mode bits；
+- 一次 `SPI_IOC_MESSAGE(1)` 的 TX-only 或 full-duplex transfer；
+- 清晰报告输入验证、native syscall/ioctl 和 configuration readback failure。
+
+V1 不提供 protocol、`read()`/`write()` byte-stream API、多段 message、跨调用保持 CS、
+per-transfer configuration、timeout、async I/O、runtime reconfiguration、自动重试或公开
+backend abstraction。
+
+## 7. CAN V1
+
+### 7.1 定位
 
 `can` 是 Linux SocketCAN RAW frame transport。它负责 CAN frame transport，
 不负责系统网络配置、上层协议和设备恢复策略。
 
-### 6.2 Frame model
+### 7.2 Frame model
 
 V1 必须显式表示并验证：
 
@@ -250,7 +274,7 @@ V1 必须显式表示并验证：
 
 公共 frame 类型采用分离模型还是带类别的统一模型，必须在 API 原型阶段决定。
 
-### 6.3 生命周期与通信
+### 7.3 生命周期与通信
 
 V1 必须支持：
 
@@ -265,7 +289,7 @@ V1 必须支持：
 
 CAN frame 必须完整收发。不得向用户暴露有效的“部分 CAN frame”结果。
 
-### 6.4 Filtering
+### 7.4 Filtering
 
 V1 必须支持：
 
@@ -278,7 +302,7 @@ V1 必须支持：
 V1 不提供通用 `FilterExpression`。`CAN_RAW_JOIN_FILTERS` 的 AND 语义是已知但
 有意延后的 Linux 原生能力。
 
-### 6.5 Socket options 与接收元数据
+### 7.5 Socket options 与接收元数据
 
 V1 必须支持：
 
@@ -291,7 +315,7 @@ V1 必须支持：
 “timestamp”不得作为未指定来源的单一布尔能力。V1 不包含硬件 timestamp、
 transmit timestamp 或 completion timestamp。
 
-### 6.6 Diagnostics
+### 7.6 Diagnostics
 
 V1 必须能够接收并解析 Linux CAN error message frames，并保留原始错误类别和
 诊断数据。
@@ -299,7 +323,7 @@ V1 必须能够接收并解析 Linux CAN error message frames，并保留原始�
 错误帧是驱动可选上报的事件，不是当前 controller/bus state 的同步查询接口。
 V1 不得声称可以通过 RAW socket 完整查询控制器状态，也不得自动执行恢复。
 
-### 6.7 CAN 排除项
+### 7.7 CAN 排除项
 
 V1 不提供：
 
@@ -315,9 +339,9 @@ V1 不提供：
 - `CAN_RAW_JOIN_FILTERS` 和过滤表达式系统；
 - 硬件、发送或 completion timestamp。
 
-## 7. 测试与验证需求
+## 8. 测试与验证需求
 
-### 7.1 Level 1：确定性单元测试
+### 8.1 Level 1：确定性单元测试
 
 每个组件必须覆盖：
 
@@ -331,7 +355,7 @@ V1 不提供：
 Realtime 并发原语还必须进行 wrap-around、满/空竞争、长时间压力和内存顺序
 验证。测试必须配合算法审查，不能替代正确性论证。
 
-### 7.2 Level 2：行为仿真测试
+### 8.2 Level 2：行为仿真测试
 
 #### Serial
 
@@ -360,7 +384,7 @@ Realtime 并发原语还必须进行 wrap-around、满/空竞争、长时间压�
 
 `can-utils` 可以作为交叉验证工具，但不得成为生产运行时依赖。
 
-### 7.3 Level 3：真实环境验证
+### 8.3 Level 3：真实环境验证
 
 必须建立可重复的验证记录，至少覆盖：
 
@@ -374,11 +398,11 @@ Realtime 并发原语还必须进行 wrap-around、满/空竞争、长时间压�
 未经 Level 3 验证的能力不得标记为 `hardware-validated`。Level 3 通过也只证明
 记录环境中的结果，不构成跨环境性能或兼容性保证。
 
-## 8. V1 Definition of Done
+## 9. V1 Definition of Done
 
 V1 在以下条件全部满足时完成：
 
-1. 三个组件满足独立构建、安装、链接和消费者测试；
+1. 四个组件满足独立构建、安装、链接和消费者测试；
 2. 所有必须能力均有公共契约和最小示例；
 3. Level 1 和 Level 2 测试稳定通过；
 4. Realtime 建立 PREEMPT_RT 可重复测量流程和报告；
@@ -387,7 +411,7 @@ V1 在以下条件全部满足时完成：
 7. 无已知未解决的数据竞争、资源泄漏或严重生命周期缺陷；
 8. 所有未完成或未验证能力均被明确标注，而不是隐含宣称支持。
 
-## 9. 路线图
+## 10. 路线图
 
 ### Phase 0：章程与需求
 
@@ -420,7 +444,7 @@ V1 在以下条件全部满足时完成：
 CANopen 先建立 slave/CiA 402 仿真，再按独立需求规格逐步实现和验证。不得把
 CANopen 接口骨架作为 V1 完整性的替代品。
 
-## 10. API 设计前的开放决策
+## 11. API 设计前的开放决策
 
 以下事项必须在具体公共类和函数设计前解决：
 

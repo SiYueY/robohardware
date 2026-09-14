@@ -49,8 +49,8 @@ Result write_max_speed_hz(int fd, std::uint32_t value) noexcept {
   return ioctl_result(fd, SPI_IOC_WR_MAX_SPEED_HZ, &value);
 }
 
-Result transfer(int fd, const spi_ioc_transfer& value) noexcept {
-  return ioctl_result(fd, SPI_IOC_MESSAGE(1), const_cast<spi_ioc_transfer*>(&value));
+Result transfer(int fd, spi_ioc_transfer& value) noexcept {
+  return ioctl_result(fd, SPI_IOC_MESSAGE(1), &value);
 }
 
 }  // namespace spi::spidev_adapter

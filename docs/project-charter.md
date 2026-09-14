@@ -4,7 +4,7 @@
 
 阶段：项目定位与 V1 需求定义
 
-最后更新：2026-09-12
+最后更新：2026-09-15
 
 ## 1. 项目定位
 
@@ -14,6 +14,7 @@ robo-hardware 是面向 Linux 机器人与工业设备驱动开发的现代 C++1
 - 确定性执行基础；
 - RT/NRT 数据交换原语；
 - UART/RS-485 transport；
+- Linux spidev SPI transport；
 - SocketCAN RAW transport；
 - 未来建立在 transport 之上的协议组件。
 
@@ -78,7 +79,7 @@ RT driver thread
         |
         | exclusive ownership
         v
-Serial / CAN handle
+Serial / SPI / CAN handle
         |
         v
 Hardware
@@ -115,7 +116,7 @@ status 或 telemetry。RT 驱动线程独占硬件 I/O 句柄。
 ### 6.3 显式资源和线程所有权
 
 - 资源使用 RAII 和 move-only ownership；
-- 一个 Serial/CAN 连接句柄由一个线程独占使用；
+- 一个 Serial/SPI/CAN 连接句柄由一个线程独占使用；
 - 同一句柄不保证并发调用安全；
 - 库内部不使用隐藏 mutex 或后台线程；
 - move、close 和 destroy 必须满足线程所有权约束。
@@ -145,6 +146,8 @@ Foundation
 Transport Components
 |-- serial
 |   `-- UART / RS-485 transport
+|-- spi
+|   `-- Linux spidev transport
 `-- can
     `-- SocketCAN RAW transport
 
@@ -158,6 +161,7 @@ V1 项目内依赖必须保持为：
 ```text
 realtime    no project dependency
 serial      no project dependency
+spi         no project dependency
 can         no project dependency
 ```
 
@@ -167,7 +171,7 @@ can         no project dependency
 canopen --> can
 ```
 
-`serial` 和 `can` 不得依赖 `realtime`。应用可以组合组件，但组合使用不构成
+`serial`、`spi` 和 `can` 不得依赖 `realtime`。应用可以组合组件，但组合使用不构成
 库之间的依赖。
 
 V1 不建立 `core`、`common`、`platform` 等公共库。命名、错误处理、时间语义、
@@ -214,7 +218,7 @@ V1 成功由可验证工程结果定义，而不是组件数量、协议覆盖�
 
 必须满足：
 
-- `realtime`、`serial`、`can` 可独立构建、安装、链接和使用；
+- `realtime`、`serial`、`spi`、`can` 可独立构建、安装、链接和使用；
 - 每个组件具备公开 Interface 契约、最小示例和 Level 1/2 测试；
 - 在 PREEMPT_RT 上建立可重复测量流程并输出延迟、抖动和执行时间报告；
 - 至少一种真实 Serial/RS-485 设备完成 Level 3 验证；
@@ -234,8 +238,8 @@ CANopen 是 transport 稳定后的独立协议里程碑。开发顺序应由仿�
 CANopen 组件不得在实现和验证能力不足时创建只有接口的占位组件，也不得在
 真实设备互操作测试前标记为 production-ready。
 
-SPI、UDP、EtherCAT、EtherNet/IP、Modbus 或其他能力不因概念结构中存在可放置
-位置而自动进入路线图。每项扩展都需要独立的真实需求和范围评审。
+UDP、EtherCAT、EtherNet/IP、Modbus 或其他能力不因概念结构中存在可放置位置而自动进入
+路线图。每项扩展都需要独立的真实需求和范围评审。
 
 ## 12. 当前非目标
 

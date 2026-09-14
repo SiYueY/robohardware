@@ -1,6 +1,6 @@
 # SPI Implementation Design
 
-状态：草案
+状态：已冻结，software-validated
 
 阶段：SPI Implementation Design
 
@@ -13,8 +13,9 @@ public contract、项目 component-first architecture 和无 hidden policy 原�
 不得为测试或未来可能的 platform 扩展增加 public backend、runtime injection、HAL 或其他
 production component dependency。
 
-在 SPI 尚未写入项目的已基线化 architecture 和 charter 前，本文只作为设计草案；编码前须先
-完成该上位范围变更。
+`spi` 已写入项目的已基线化 charter、V1 requirements 和 architecture；本文记录已实现且
+经 Level 1 单元测试与安装后 consumer test 验证的设计。真实 Linux SPI hardware validation
+仍待完成。
 
 参考输入及取舍：
 

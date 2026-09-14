@@ -133,7 +133,7 @@ Result write_max_speed_hz(int, std::uint32_t value) noexcept {
   }
   return result(Operation::WriteSpeed);
 }
-Result transfer(int, const spi_ioc_transfer& value) noexcept {
+Result transfer(int, spi_ioc_transfer& value) noexcept {
   record(Operation::Transfer);
   state.transferred = value;
   return result(Operation::Transfer);

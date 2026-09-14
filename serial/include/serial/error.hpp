@@ -5,7 +5,7 @@
 namespace serial {
 
 enum class Error {
-  PortAlreadyOpen,
+  PortAlreadyOpen = 1,
   PortNotOpen,
   DeviceDisconnected,
   UnsupportedConfiguration,

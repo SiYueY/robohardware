@@ -20,6 +20,6 @@ struct Result final {
 [[nodiscard]] Result write_bits_per_word(int fd, std::uint8_t value) noexcept;
 [[nodiscard]] Result read_max_speed_hz(int fd, std::uint32_t& value) noexcept;
 [[nodiscard]] Result write_max_speed_hz(int fd, std::uint32_t value) noexcept;
-[[nodiscard]] Result transfer(int fd, const spi_ioc_transfer& value) noexcept;
+[[nodiscard]] Result transfer(int fd, spi_ioc_transfer& value) noexcept;
 
 }  // namespace spi::spidev_adapter

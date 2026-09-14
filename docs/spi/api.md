@@ -1,6 +1,6 @@
 # SPI Interface Design
 
-状态：草案
+状态：已冻结
 
 阶段：SPI API Design
 

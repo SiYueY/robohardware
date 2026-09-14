@@ -1,6 +1,6 @@
-# SPI 文档草案
+# SPI 文档
 
-状态：草案
+状态：已冻结，software-validated
 
 阶段：SPI Design
 
@@ -27,7 +27,7 @@ Linux SPI controller driver
 Peripheral
 ```
 
-公共身份拟定为：
+公共身份：
 
 ```text
 namespace:    spi
@@ -65,6 +65,6 @@ byte 均属于调用者；`spi` 不决定 dummy 值。
 
 ## 与项目基线的关系
 
-当前 `docs/project-charter.md` 和 `docs/architecture.md` 已基线化，尚未把 `spi` 列入其
-V1 production component map。本草案记录已确认的 SPI 设计结论；进入实现前，必须单独更新
-这些上位文档及根构建编排，使 SPI 的 component identity 和依赖图成为正式基线。
+`spi` 已纳入项目章程、V1 requirements、architecture 和根构建编排的 V1 production
+component map。其 API 与 Linux spidev implementation 已冻结并完成 software validation；真实
+硬件验证仍是后续工作。

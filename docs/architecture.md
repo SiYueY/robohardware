@@ -4,14 +4,14 @@
 
 阶段：Architecture Design
 
-最后更新：2026-09-12
+最后更新：2026-09-15
 
 ## 1. 目的
 
 本文定义 robo-hardware V1 的 repository layout、component identity、public/private seam、
 依赖方向、namespace、include path、CMake target、package、版本和多仓库演进策略。
 
-本文不定义 Realtime、Queue、Buffer、Serial 或 CAN 的具体 C++ interface。
+本文不定义 Realtime、Queue、Buffer、Serial、SPI 或 CAN 的具体 C++ interface。
 这些 interface 只能在本文评审通过后进入 API Design。
 
 项目章程和 V1 需求规格是本文的上位约束。本文不得扩大 V1 功能范围。
@@ -25,7 +25,7 @@ Architecture 必须区分三个层次：
 | 层次 | 身份 | 职责 |
 |---|---|---|
 | Repository | `robo-hardware` | 承载源码、组合开发、统一 CI 和 V1 发布编排 |
-| Distribution component | `realtime`、`serial`、`can` | 可独立提取、构建、测试、安装、发布的源码和 package 单位 |
+| Distribution component | `realtime`、`serial`、`spi`、`can` | 可独立提取、构建、测试、安装、发布的源码和 package 单位 |
 | Public identity | `<component>` | 调用者长期依赖的 C++ namespace、include、CMake target 和 package 身份 |
 
 本文使用 component 专指独立分发单位。V1 中每个 component 对应一个 production
@@ -51,6 +51,7 @@ library，并拥有一个供调用者使用和测试的公开 interface。V1 不
 Libraries
 |-- realtime
 |-- serial
+|-- spi
 |-- can
 `-- canopen (future)
 ```
@@ -62,7 +63,7 @@ repository 不拥有任何 component 的公共 namespace。每个 component 自�
 
 Architecture Design 必须满足：
 
-1. `realtime`、`serial`、`can` 是三个独立 distribution component；
+1. `realtime`、`serial`、`spi`、`can` 是四个独立 distribution component；
 2. 每个 component 能够独立提取、配置、构建、测试、安装和消费；
 3. V1 production library 之间不存在依赖；
 4. 不建立公共 runtime、HAL、device framework 或 transport 抽象；
@@ -97,6 +98,10 @@ robo-hardware/
 |       |-- README.md
 |       |-- api.md
 |       `-- implementation.md
+|   `-- spi/
+|       |-- README.md
+|       |-- api.md
+|       `-- implementation.md
 |-- realtime/
 |   |-- CMakeLists.txt
 |   |-- README.md
@@ -127,6 +132,14 @@ robo-hardware/
 |   |   |-- consumer/
 |   |   `-- support/
 |   `-- examples/
+|-- spi/
+|   |-- CMakeLists.txt
+|   |-- README.md
+|   |-- CHANGELOG.md
+|   |-- cmake/
+|   |-- include/spi/
+|   |-- src/
+|   `-- tests/
 |-- can/
 |   |-- CMakeLists.txt
 |   |-- README.md
@@ -213,7 +226,7 @@ V1 由 repository 根 `LICENSE` 统一声明许可证，不在 component 目录�
 
 ### 4.4 Layout rationale
 
-根级 `realtime/`、`serial/`、`can/` 表达它们是 repository 中的独立分发单位，
+根级 `realtime/`、`serial/`、`spi/`、`can/` 表达它们是 repository 中的独立分发单位，
 不是名为 robo-hardware 的 SDK 内部子目录。component 内继续使用 `include/src`
 以明确公开 seam 和私有 implementation；component-first 不要求混放 header 和
 source。
@@ -225,6 +238,7 @@ source。
 ```text
 realtime
 serial
+spi
 can
 ```
 
@@ -238,10 +252,12 @@ realtime ---> C++ standard library + Linux/POSIX
 
 serial   ---> C++ standard library + Linux tty/ioctl/poll
 
+spi      ---> C++ standard library + Linux spidev/ioctl
+
 can      ---> C++ standard library + Linux SocketCAN/socket/poll
 ```
 
-三个 production library 之间没有依赖。相同的 deadline 和错误处理原则可以形成
+四个 production library 之间没有依赖。相同的 deadline 和错误处理原则可以形成
 一致的 interface，但不能仅为消除少量重复 implementation 而引入公共 library。
 
 ### 5.3 Future dependency
@@ -271,6 +287,7 @@ V1 不创建 CANopen 目录、target、package 或占位 implementation。
 ```cpp
 namespace realtime {}
 namespace serial {}
+namespace spi {}
 namespace can {}
 ```
 
@@ -298,6 +315,7 @@ package 和发行渠道的可用性核查；该风险不通过 repository 前缀
 #include <realtime/queue.hpp>
 #include <realtime/buffer.hpp>
 #include <serial/port.hpp>
+#include <spi/device.hpp>
 #include <can/frame.hpp>
 ```
 
@@ -362,6 +380,7 @@ cmake --install build/realtime --prefix <prefix>
 ```text
 realtime
 serial
+spi
 can
 ```
 
@@ -375,6 +394,7 @@ repository 的 CMake 变量、helper 或生成文件。
 ```text
 REALTIME_BUILD
 SERIAL_BUILD
+SPI_BUILD
 CAN_BUILD
 ```
 
@@ -393,6 +413,7 @@ CAN_BUILD
 ```text
 realtime
 serial
+spi
 can
 ```
 
@@ -401,6 +422,7 @@ build tree 和 install tree 都必须提供：
 ```text
 realtime::realtime
 serial::serial
+spi::spi
 can::can
 ```
 
@@ -410,6 +432,7 @@ can::can
 ```text
 realtime -> EXPORT_NAME realtime
 serial   -> EXPORT_NAME serial
+spi      -> EXPORT_NAME spi
 can      -> EXPORT_NAME can
 ```
 
@@ -439,7 +462,7 @@ V1 不为假设的 ABI 稳定统一引入 PImpl。
 
 ### 8.6 CMake baseline
 
-最低 CMake 版本暂定为 3.20。Phase 1 必须分别在三个 standalone component 和
+最低 CMake 版本暂定为 3.20。Phase 1 必须分别在四个 standalone component 和
 根编排构建中验证选择性构建、GNUInstallDirs、export、package config 和 consumer
 测试；验证前不得提高最低版本。
 
@@ -452,11 +475,13 @@ V1 不为假设的 ABI 稳定统一引入 PImpl。
 ```cmake
 find_package(realtime CONFIG REQUIRED)
 find_package(serial CONFIG REQUIRED)
+find_package(spi CONFIG REQUIRED)
 find_package(can CONFIG REQUIRED)
 
 target_link_libraries(app PRIVATE
   realtime::realtime
   serial::serial
+  spi::spi
   can::can
 )
 ```
@@ -472,14 +497,17 @@ include root 保持一致。V1 不提供 repository umbrella package。
 ```text
 <prefix>/include/realtime/
 <prefix>/include/serial/
+<prefix>/include/spi/
 <prefix>/include/can/
 
 <prefix>/<libdir>/librealtime.{a,so}
 <prefix>/<libdir>/libserial.{a,so}
+<prefix>/<libdir>/libspi.{a,so}
 <prefix>/<libdir>/libcan.{a,so}
 
 <prefix>/<libdir>/cmake/realtime/
 <prefix>/<libdir>/cmake/serial/
+<prefix>/<libdir>/cmake/spi/
 <prefix>/<libdir>/cmake/can/
 ```
 
@@ -496,6 +524,7 @@ include root 保持一致。V1 不提供 repository umbrella package。
 ```text
 realtime-dev
 serial-dev
+spi-dev
 can-dev
 ```
 
@@ -510,7 +539,7 @@ file 中拥有版本。component standalone build 不读取根 repository 版本
 
 ### 10.2 V1 coordinated releases
 
-V1 阶段为了降低单人维护成本，三个 component 使用相同版本号并协调发布。根
+V1 阶段为了降低单人维护成本，四个 component 使用相同版本号并协调发布。根
 repository tag 可以使用：
 
 ```text
@@ -519,7 +548,7 @@ v0.2.0
 ```
 
 协调版本是发布策略，不是 Architecture 依赖。根 CI 必须检查 V1 coordinated
-release 中三个 component 声明的版本一致。
+release 中四个 component 声明的版本一致。
 
 ### 10.3 Future independent releases
 
@@ -528,6 +557,7 @@ release 中三个 component 声明的版本一致。
 ```text
 realtime-v0.4.0
 serial-v0.3.0
+spi-v0.2.0
 can-v0.2.0
 ```
 
@@ -550,12 +580,14 @@ implementation 重构而 interface 行为不变时，这些测试不应修改。
 
 ### 11.2 OS seam
 
-Serial 和 CAN 只有 Linux production implementation，因此 V1 不创建公开 adapter
-interface。为测试添加 `ISerialBackend`、`ICanBackend` 或 `ITransport` 会制造只有
+Serial、SPI 和 CAN 只有 Linux production implementation，因此 V1 不创建公开 adapter
+interface。为测试添加 `ISerialBackend`、`ISpiBackend`、`ICanBackend` 或 `ITransport` 会制造只有
 一个 production adapter 的假 seam。
 
 ```text
 Serial interface ---> Linux tty implementation ---> PTY ---> firmware simulator
+
+SPI interface    ---> Linux spidev implementation ---> controlled adapter / hardware
 
 CAN interface    ---> SocketCAN implementation  ---> vcan --> CAN node simulator
 ```
@@ -624,10 +656,10 @@ component 在拆分前必须已经：
 
 ## 13. Architecture Decisions
 
-| 决策 | Architecture v2 选择 | 拒绝方案与原因 |
+| 决策 | Architecture v3 选择 | 拒绝方案与原因 |
 |---|---|---|
 | Repository role | portfolio 与开发编排容器 | SDK 产品模型混淆 repository 与 component identity |
-| Source layout | 根级 `realtime/serial/can` | `modules/` 表达 SDK 内部子目录而非独立分发单位 |
+| Source layout | 根级 `realtime/serial/spi/can` | `modules/` 表达 SDK 内部子目录而非独立分发单位 |
 | Component build | 每个目录是 standalone CMake project | 仅根项目选择性构建使根成为必要条件 |
 | Public identity | `<component>` | repository/brand 前缀会把独立基础库绑定为内部 SDK component |
 | Include | `<component>/...` | repository-first 路径 |
@@ -645,7 +677,7 @@ component 在拆分前必须已经：
 
 ### 14.1 Standalone build duplication
 
-三个 component 会重复少量 CMake 安装、warnings 和测试编排逻辑。这是保证可独立
+四个 component 会重复少量 CMake 安装、warnings 和测试编排逻辑。这是保证可独立
 提取所接受的成本。根 repository 不得通过共享私有 helper 消除这种重复；只有形成
 可独立版本化的公开 CMake helper package 后才能重新评审。
 
@@ -672,7 +704,7 @@ Architecture 支持将完整 component 目录作为有版本的源码单位提�
 
 ## 15. Architecture Definition Of Done
 
-Architecture Design v2 在以下条件满足后可以进入 API Design：
+Architecture Design v3 在以下条件满足后可以进入 API Design：
 
 1. root-level component layout 被接受；
 2. standalone component CMake 模型被接受；
@@ -692,7 +724,8 @@ Architecture 接受后，API Design 按以下顺序进行：
 2. Realtime 执行基础 interface；
 3. `Queue<T, Capacity>` 与 `Buffer<T>` contract；
 4. Serial interface；
-5. CAN frame model 和 SocketCAN interface。
+5. SPI interface；
+6. CAN frame model 和 SocketCAN interface。
 
 以下问题保留给对应 API Design：
 
