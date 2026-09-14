@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(spi VERSION 0.1.0 LANGUAGES CXX)
+project(spi VERSION 0.2.0 LANGUAGES CXX)
 
 include(CTest)
 include(CMakePackageConfigHelpers)
@@ -16,8 +16,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(
   spi
     src/device.cpp
-    src/error.cpp
-    src/options.cpp
     src/spidev_adapter_linux.cpp
 )
 add_library(spi::spi ALIAS spi)
@@ -40,8 +38,7 @@ if(BUILD_TESTING)
     spi_public_headers_compile_test
     OBJECT
       tests/public_headers/device.cpp
-      tests/public_headers/error.cpp
-      tests/public_headers/options.cpp
+      tests/public_headers/config.cpp
   )
   target_compile_features(spi_public_headers_compile_test PRIVATE cxx_std_17)
   target_include_directories(spi_public_headers_compile_test PRIVATE include)
@@ -51,8 +48,6 @@ if(BUILD_TESTING)
       tests/unit/device_test.cpp
       tests/support/controlled_spidev_adapter.cpp
       src/device.cpp
-      src/error.cpp
-      src/options.cpp
   )
   target_compile_features(spi_unit_test PRIVATE cxx_std_17)
   target_compile_definitions(spi_unit_test PRIVATE _GNU_SOURCE)

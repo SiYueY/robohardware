@@ -60,10 +60,10 @@ void reset_adapter() noexcept {
   state.results[index(Operation::Transfer)] = {0, 0};
 }
 
-void set_result(Operation operation, long value, int error) noexcept {
+void set_result(Operation operation, int value, int error) noexcept {
   state.results[index(operation)] = {value, error};
 }
-void set_result_on_call(Operation operation, std::size_t call_number, long value, int error) noexcept {
+void set_result_on_call(Operation operation, std::size_t call_number, int value, int error) noexcept {
   if (call_number == 0 || call_number > kMaxScheduledCalls) return;
   const auto operation_index = index(operation);
   state.scheduled_results[operation_index][call_number - 1] = {value, error};

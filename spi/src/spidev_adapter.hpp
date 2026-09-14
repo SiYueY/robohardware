@@ -8,7 +8,7 @@
 namespace spi::spidev_adapter {
 
 struct Result final {
-  long value;
+  int value;
   int error;
 };
 

@@ -11,7 +11,13 @@
 namespace spi {
 namespace {
 
-constexpr int kClosedFd = -1;
+struct NativeConfig final {
+  std::uint32_t mode;
+  std::uint8_t bits_per_word;
+  std::uint32_t max_speed_hz;
+};
+
+enum class ConfigStage { None, Mode, BitsPerWord, MaxSpeed };
 
 [[nodiscard]] std::error_code generic(std::errc value) noexcept {
   return std::make_error_code(value);
@@ -55,125 +61,106 @@ constexpr int kClosedFd = -1;
   return (actual & kOwnedModeBits) == (requested & kOwnedModeBits);
 }
 
-void rollback(int fd,
-              std::uint32_t mode,
-              bool mode_attempted,
-              std::uint8_t bits_per_word,
-              bool bits_attempted,
-              std::uint32_t max_speed_hz,
-              bool speed_attempted) noexcept {
-  if (speed_attempted) {
-    static_cast<void>(spidev_adapter::write_max_speed_hz(fd, max_speed_hz));
+void restore(int fd, const NativeConfig& original, ConfigStage stage) noexcept {
+  if (stage == ConfigStage::MaxSpeed) {
+    static_cast<void>(spidev_adapter::write_max_speed_hz(fd, original.max_speed_hz));
   }
-  if (bits_attempted) {
-    static_cast<void>(spidev_adapter::write_bits_per_word(fd, bits_per_word));
+  if (stage == ConfigStage::MaxSpeed || stage == ConfigStage::BitsPerWord) {
+    static_cast<void>(spidev_adapter::write_bits_per_word(fd, original.bits_per_word));
   }
-  if (mode_attempted) {
-    static_cast<void>(spidev_adapter::write_mode32(fd, mode));
+  if (stage != ConfigStage::None) {
+    static_cast<void>(spidev_adapter::write_mode32(fd, original.mode));
   }
   static_cast<void>(spidev_adapter::close_fd(fd));
 }
 
 }  // namespace
 
-Device::Device() noexcept : fd_(kClosedFd) {}
-
 Device::~Device() noexcept { static_cast<void>(close()); }
 
-Device::Device(Device&& other) noexcept : fd_(other.fd_) { other.fd_ = kClosedFd; }
+Device::Device(Device&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
 
 bool Device::is_open() const noexcept { return fd_ >= 0; }
 
-std::error_code Device::open(const std::string& path, const Options& options) noexcept {
-  if (is_open()) return make_error_code(Error::DeviceAlreadyOpen);
+std::error_code Device::open(const std::string& path, const Config& config) noexcept {
+  if (is_open()) return generic(std::errc::device_or_resource_busy);
   if (path.empty() || path.find('\0') != std::string::npos) {
     return generic(std::errc::invalid_argument);
   }
-  if (!valid(options.mode_) || !valid(options.bit_order_) || options.frequency_hz_ == 0 ||
-      options.bits_per_word_ == 0) {
+  if (!valid(config.mode) || !valid(config.bit_order) || config.max_speed_hz == 0 ||
+      config.bits_per_word == 0) {
     return generic(std::errc::invalid_argument);
   }
 
   const auto opened = spidev_adapter::open_path(path.c_str(), O_RDWR | O_CLOEXEC);
   if (opened.value < 0) return system(opened.error);
-  const auto fd = static_cast<int>(opened.value);
+  const auto fd = opened.value;
 
-  std::uint32_t original_mode{};
-  const auto mode_captured = spidev_adapter::read_mode32(fd, original_mode);
+  NativeConfig original{};
+  const auto mode_captured = spidev_adapter::read_mode32(fd, original.mode);
   if (mode_captured.value < 0) {
     static_cast<void>(spidev_adapter::close_fd(fd));
     return mode_captured.error == ENOTTY
                ? generic(std::errc::inappropriate_io_control_operation)
                : system(mode_captured.error);
   }
-  std::uint8_t original_bits_per_word{};
-  const auto bits_captured = spidev_adapter::read_bits_per_word(fd, original_bits_per_word);
+  const auto bits_captured = spidev_adapter::read_bits_per_word(fd, original.bits_per_word);
   if (bits_captured.value < 0) {
     static_cast<void>(spidev_adapter::close_fd(fd));
     return system(bits_captured.error);
   }
-  std::uint32_t original_max_speed_hz{};
-  const auto speed_captured = spidev_adapter::read_max_speed_hz(fd, original_max_speed_hz);
+  const auto speed_captured = spidev_adapter::read_max_speed_hz(fd, original.max_speed_hz);
   if (speed_captured.value < 0) {
     static_cast<void>(spidev_adapter::close_fd(fd));
     return system(speed_captured.error);
   }
 
-  const auto candidate_mode = requested_mode(options.mode_, options.bit_order_, original_mode);
-  bool mode_attempted = true;
-  bool bits_attempted = false;
-  bool speed_attempted = false;
-
+  const auto candidate_mode = requested_mode(config.mode, config.bit_order, original.mode);
+  auto stage = ConfigStage::Mode;
   const auto mode_written = spidev_adapter::write_mode32(fd, candidate_mode);
   if (mode_written.value < 0) {
     const auto error = system(mode_written.error);
-    rollback(fd, original_mode, mode_attempted, original_bits_per_word, bits_attempted,
-             original_max_speed_hz, speed_attempted);
+    restore(fd, original, stage);
     return error;
   }
   std::uint32_t actual_mode{};
   const auto mode_readback = spidev_adapter::read_mode32(fd, actual_mode);
   if (mode_readback.value < 0 || !mode_matches(actual_mode, candidate_mode)) {
     const auto error = mode_readback.value < 0 ? system(mode_readback.error)
-                                               : make_error_code(Error::ConfigurationMismatch);
-    rollback(fd, original_mode, mode_attempted, original_bits_per_word, bits_attempted,
-             original_max_speed_hz, speed_attempted);
+                                               : generic(std::errc::io_error);
+    restore(fd, original, stage);
     return error;
   }
 
-  bits_attempted = true;
-  const auto bits_written = spidev_adapter::write_bits_per_word(fd, options.bits_per_word_);
+  stage = ConfigStage::BitsPerWord;
+  const auto bits_written = spidev_adapter::write_bits_per_word(fd, config.bits_per_word);
   if (bits_written.value < 0) {
     const auto error = system(bits_written.error);
-    rollback(fd, original_mode, mode_attempted, original_bits_per_word, bits_attempted,
-             original_max_speed_hz, speed_attempted);
+    restore(fd, original, stage);
     return error;
   }
   std::uint8_t actual_bits_per_word{};
   const auto bits_readback = spidev_adapter::read_bits_per_word(fd, actual_bits_per_word);
-  if (bits_readback.value < 0 || actual_bits_per_word != options.bits_per_word_) {
+  if (bits_readback.value < 0 || actual_bits_per_word != config.bits_per_word) {
     const auto error = bits_readback.value < 0 ? system(bits_readback.error)
-                                               : make_error_code(Error::ConfigurationMismatch);
-    rollback(fd, original_mode, mode_attempted, original_bits_per_word, bits_attempted,
-             original_max_speed_hz, speed_attempted);
+                                               : generic(std::errc::io_error);
+    restore(fd, original, stage);
     return error;
   }
 
-  speed_attempted = true;
-  const auto speed_written = spidev_adapter::write_max_speed_hz(fd, options.frequency_hz_);
+  stage = ConfigStage::MaxSpeed;
+  const auto speed_written = spidev_adapter::write_max_speed_hz(fd, config.max_speed_hz);
   if (speed_written.value < 0) {
     const auto error = system(speed_written.error);
-    rollback(fd, original_mode, mode_attempted, original_bits_per_word, bits_attempted,
-             original_max_speed_hz, speed_attempted);
+    restore(fd, original, stage);
     return error;
   }
   std::uint32_t actual_max_speed_hz{};
   const auto speed_readback = spidev_adapter::read_max_speed_hz(fd, actual_max_speed_hz);
-  if (speed_readback.value < 0 || actual_max_speed_hz != options.frequency_hz_) {
+  if (speed_readback.value < 0 || actual_max_speed_hz != config.max_speed_hz) {
     const auto error = speed_readback.value < 0 ? system(speed_readback.error)
-                                                : make_error_code(Error::ConfigurationMismatch);
-    rollback(fd, original_mode, mode_attempted, original_bits_per_word, bits_attempted,
-             original_max_speed_hz, speed_attempted);
+                                                : generic(std::errc::io_error);
+    restore(fd, original, stage);
     return error;
   }
 
@@ -184,16 +171,16 @@ std::error_code Device::open(const std::string& path, const Options& options) no
 std::error_code Device::close() noexcept {
   if (!is_open()) return {};
   const auto fd = fd_;
-  fd_ = kClosedFd;
+  fd_ = -1;
   const auto closed = spidev_adapter::close_fd(fd);
   return closed.value < 0 ? system(closed.error) : std::error_code{};
 }
 
 std::error_code Device::transfer(
     const std::byte* tx, std::byte* rx, std::size_t size) noexcept {
-  if (!is_open()) return make_error_code(Error::DeviceNotOpen);
+  if (!is_open()) return generic(std::errc::bad_file_descriptor);
   if (size == 0) return {};
-  if (tx == nullptr) return generic(std::errc::invalid_argument);
+  if (tx == nullptr && rx == nullptr) return generic(std::errc::invalid_argument);
   constexpr auto kMaxLength =
       static_cast<std::size_t>(std::numeric_limits<int>::max()) <
               static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())

@@ -39,13 +39,10 @@ spi/
 ├── cmake/
 │   └── spiConfig.cmake.in
 ├── include/spi/
-│   ├── device.hpp
-│   ├── error.hpp
-│   └── options.hpp
+│   ├── config.hpp
+│   └── device.hpp
 ├── src/
 │   ├── device.cpp
-│   ├── error.cpp
-│   ├── options.cpp
 │   ├── spidev_adapter.hpp
 │   └── spidev_adapter_linux.cpp
 └── tests/
@@ -56,8 +53,7 @@ spi/
         └── controlled_spidev_adapter.cpp
 ```
 
-只在产生实际内容时创建目录或文件。`options.cpp` 与 `serial/configuration.cpp` 一样承载
-公开构造函数定义；不是为抽象而存在的空层。private header 不安装，且不引入
+`Config` 是 header-only aggregate；private header 不安装，且不引入
 `detail`、`backend`、`core`、`platform`、`manager` 或 `interface` 目录/层。
 
 ## 3. Private Linux spidev seam
@@ -71,8 +67,8 @@ unit test:  Device -> controlled_spidev_adapter
 
 它只封装 native open/close 和所需 ioctl：read/write mode32、bits-per-word、maximum speed，
 以及 `SPI_IOC_MESSAGE(1)`。每个 adapter 函数只返回 native result 和立即捕获的 `errno`；它
-不理解 `Options`、Device state、validation order、`std::error_code`、rollback 或
-`ConfigurationMismatch`。`device.cpp` 是唯一的领域映射和状态提交点。
+不理解 `Config`、Device state、validation order、`std::error_code` 或 rollback。`device.cpp`
+是唯一的领域映射和状态提交点。
 
 production object 不保存 virtual backend、function table、`std::function` 或 runtime-selected
 adapter；test adapter 不编译、链接或安装进 production component。禁止 public `SpiBackend`、
@@ -81,12 +77,12 @@ adapter；test adapter 不编译、链接或安装进 production component。禁
 
 ## 4. Device storage and configuration sequence
 
-`Device` 只保存 `fd_`：`-1` 为 closed，非负值为 open。它不保存 path、Options、native
+`Device` 只保存 `fd_`：`-1` 为 closed，非负值为 open。它不保存 path、Config、native
 configuration cache、transfer buffer、deadline、mutex 或 background state。
 
 `open()` 使用 local fd，并严格按下列顺序执行：
 
-1. 验证 Device state、path 和 Options；
+1. 验证 Device state、path 和 Config；
 2. 使用 `O_RDWR | O_CLOEXEC` 打开 local fd；
 3. capture 全部原始 state：`SPI_IOC_RD_MODE32`、`SPI_IOC_RD_BITS_PER_WORD`、
    `SPI_IOC_RD_MAX_SPEED_HZ`；
@@ -108,7 +104,7 @@ readback 或后续 transfer 的配置不能得到本组件保证；此类互斥�
 
 mode 使用 read-modify-write：从 captured mode32 生成 candidate，仅修改 `SPI_CPOL`、
 `SPI_CPHA` 和 `SPI_LSB_FIRST`，并保留所有 unowned mode bits。readback 仅比较这三个 owned
-fields。bits-per-word 与 maximum speed 逐项 apply/readback。frequency readback 只验证
+fields。bits-per-word 与 maximum speed 逐项 apply/readback。maximum-speed readback 只验证
 spidev 保存的 request，绝不推断物理 SCLK。
 
 initial `SPI_IOC_RD_MODE32` 的 `ENOTTY` 映射为 generic
@@ -140,8 +136,8 @@ component 的 allocation 或 latency contract。
 - syscall/ioctl errors 在失败点立即保存 `errno`，使用 system category；
 - initial `SPI_IOC_RD_MODE32` 的 `ENOTTY` 映射为
   `inappropriate_io_control_operation`；
-- only successful native configuration write followed by owned-field readback mismatch maps to
-  `spi::Error::ConfigurationMismatch`；
+- successful native configuration write followed by owned-field readback mismatch maps to
+  generic `io_error`；
 - `close()` 先清除 `fd_` 再 close captured fd；close error 不触发 retry 或 re-ownership；
 - destructor ignores close error and performs no logging。
 
@@ -150,7 +146,7 @@ component 的 allocation 或 latency contract。
 ### Level 1 — deterministic unit evidence
 
 controlled adapter 必须通过同一 public `Device` interface 覆盖 lifecycle、validation order、
-path/Options validation、native errors、capture/RMW/readback、每个 configuration stage 的
+path/Config validation、native errors、capture/RMW/readback、每个 configuration stage 的
 primary failure、reverse rollback、rollback-error preservation、close error、all transfer forms、
 `size_t` range、ioctl result mapping、alias、zero-size no-ioctl 和 no-retry。另有 self-contained
 public-header compile test。
@@ -171,5 +167,5 @@ controller-specific loopback（如 SPI_LOOP）可作为未来环境专用证据�
 真实验证必须使用 Linux host、spidev、controller 和 peripheral；至少一次应借助 logic analyzer
 或 oscilloscope 留下线上证据。报告记录 requested versus observed CPOL/CPHA、SCLK、CS window、
 bit order、bits-per-word、full-duplex、TX-only、command/address/dummy/data read、large and
-repeated transfers。报告也必须记录 controller 未支持的 Options，而不把所有 controller 都
+repeated transfers。报告也必须记录 controller 未支持的 Config，而不把所有 controller 都
 支持所有配置组合当作 component 的通过条件。

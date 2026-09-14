@@ -44,24 +44,25 @@ package:      spi
 V1 只支持 Linux userspace SPI initiator 通过 Linux spidev 使用已由系统配置好的设备节点：
 
 - `Device` 的 RAII fd 生命周期；
+- aggregate `Config` 请求对象；
 - 在 `open()` 时设置和回读 mode、maximum speed、bits per word、bit order；
 - 一个 `transfer()` 对应一次 `SPI_IOC_MESSAGE(1)`；
-- TX-only 或 full-duplex buffer transfer；
+- TX-only、RX-only 或 full-duplex buffer transfer；
 - Linux spidev 的同步 ioctl backend。
 
 V1 不支持：
 
 - peripheral/slave 模式、SPI controller driver、device tree、pinmux、kernel module；
 - sensor、motor、Flash、寄存器或任何设备协议；
-- `read()` / `write()` API、隐式 MOSI dummy 数据、帧解析；
+- `read()` / `write()` API、帧解析；
 - 多段 message、跨调用保持 CS、外部 GPIO CS、CS 极性控制、bus manager 或 transaction lock；
 - per-transfer speed、bits-per-word、delay、CS 或 multi-lane override；
 - timeout、cancel、async I/O、callback、future、coroutine、后台线程或自动重试；
 - runtime reconfiguration、device discovery、auto recovery、actual SCLK 查询；
 - public backend abstraction、mock API 或跨平台 backend。
 
-每个 V1 transaction 都由调用者提供 TX buffer。设备协议所需的 command、address 和 dummy
-byte 均属于调用者；`spi` 不决定 dummy 值。
+每个 V1 transaction 至少提供 TX 或 RX buffer。设备协议所需的 command、address 和 dummy
+byte 均属于调用者；RX-only transfer 采用 Linux spidev 的 zero MOSI shift semantics。
 
 ## 与项目基线的关系
 

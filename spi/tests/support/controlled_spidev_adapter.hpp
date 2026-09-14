@@ -20,9 +20,9 @@ enum class Operation {
 };
 
 void reset_adapter() noexcept;
-void set_result(Operation operation, long value, int error = 0) noexcept;
+void set_result(Operation operation, int value, int error = 0) noexcept;
 void set_result_on_call(
-    Operation operation, std::size_t call_number, long value, int error = 0) noexcept;
+    Operation operation, std::size_t call_number, int value, int error = 0) noexcept;
 void set_mode(std::uint32_t value) noexcept;
 void set_bits_per_word(std::uint8_t value) noexcept;
 void set_max_speed_hz(std::uint32_t value) noexcept;

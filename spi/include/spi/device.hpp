@@ -1,18 +1,16 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include <string>
 #include <system_error>
 
-#include <spi/error.hpp>
-#include <spi/options.hpp>
+#include <spi/config.hpp>
 
 namespace spi {
 
 class Device final {
  public:
-  Device() noexcept;
+  Device() noexcept = default;
   ~Device() noexcept;
   Device(const Device&) = delete;
   Device& operator=(const Device&) = delete;
@@ -21,7 +19,7 @@ class Device final {
 
   [[nodiscard]] std::error_code open(
       const std::string& path,
-      const Options& options) noexcept;
+      const Config& config) noexcept;
   [[nodiscard]] std::error_code close() noexcept;
   [[nodiscard]] bool is_open() const noexcept;
   [[nodiscard]] std::error_code transfer(
@@ -30,7 +28,7 @@ class Device final {
       std::size_t size) noexcept;
 
  private:
-  int fd_;
+  int fd_{-1};
 };
 
 }  // namespace spi
