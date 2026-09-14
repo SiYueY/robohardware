@@ -29,3 +29,17 @@ and `realtime` package.
 is the `serial` namespace, `<serial/...>` include root, `serial::serial` CMake target, and
 `serial` package. It has no production dependency on `realtime`; applications compose the two
 components while retaining independent ownership and timing contracts.
+
+## SPI
+
+`spi` is an independent Linux C++17 synchronous SPI-transaction transport library. Its public
+identity is the `spi` namespace, `<spi/...>` include root, `spi::spi` CMake target, and `spi`
+package. It has no production dependency on the other components.
+
+**SPI Device**:
+A move-only owner of one Linux spidev file descriptor, configured when opened and used for
+synchronous SPI transactions.
+
+**SPI transaction**:
+One caller-initiated synchronous transfer through a single spidev message, with a single
+configured SPI Device.

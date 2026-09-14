@@ -1,0 +1,29 @@
+set(spi_prefix "@CMAKE_CURRENT_BINARY_DIR@/consumer-prefix")
+set(spi_consumer_build "@CMAKE_CURRENT_BINARY_DIR@/consumer-build")
+
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" --install "@CMAKE_BINARY_DIR@" --prefix "${spi_prefix}"
+  RESULT_VARIABLE install_result
+)
+if(NOT install_result EQUAL 0)
+  message(FATAL_ERROR "spi installation failed")
+endif()
+
+execute_process(
+  COMMAND "@CMAKE_COMMAND@"
+    -S "@CMAKE_CURRENT_SOURCE_DIR@/tests/consumer"
+    -B "${spi_consumer_build}"
+    "-DCMAKE_PREFIX_PATH=${spi_prefix}"
+  RESULT_VARIABLE configure_result
+)
+if(NOT configure_result EQUAL 0)
+  message(FATAL_ERROR "spi consumer configuration failed")
+endif()
+
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" --build "${spi_consumer_build}"
+  RESULT_VARIABLE build_result
+)
+if(NOT build_result EQUAL 0)
+  message(FATAL_ERROR "spi consumer build failed")
+endif()

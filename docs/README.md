@@ -4,3 +4,4 @@
 - [V1 需求规格](v1-requirements.md)：跨组件的 V1 范围与验收要求。
 - [Architecture Design](architecture.md)：repository、component、依赖和发布结构。
 - [Serial 组件文档](serial/README.md)：`serial` 的公开接口设计。
+- [SPI 组件文档（草案）](spi/README.md)：`spi` 的范围、公开接口和 Linux spidev 实现设计。

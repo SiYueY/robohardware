@@ -6,6 +6,7 @@ include(CTest)
 
 option(REALTIME_BUILD "Build the realtime component" ON)
 option(SERIAL_BUILD "Build the serial component" OFF)
+option(SPI_BUILD "Build the spi component" OFF)
 option(CAN_BUILD "Build the can component" OFF)
 
 if(REALTIME_BUILD)
@@ -14,4 +15,8 @@ endif()
 
 if(SERIAL_BUILD)
   add_subdirectory(serial)
+endif()
+
+if(SPI_BUILD)
+  add_subdirectory(spi)
 endif()
