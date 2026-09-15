@@ -18,22 +18,16 @@ robo-hardware 是面向 Linux 机器人与工业设备驱动开发的现代 C++1
 - SocketCAN RAW transport；
 - 未来建立在 transport 之上的协议组件。
 
-各组件必须能够独立构建、独立安装、独立链接和独立使用。项目不依赖 ROS，
-不包含设备业务逻辑。
+项目使用单一 root build、install 和 CMake package（`hardware`），并生成多个可独立
+链接的动态库。它不依赖 ROS，也不包含设备业务逻辑。
 
-“库族”表示一套统一工程标准下的多个独立组件，不表示共享运行时、必须整体链接的单体库
-或永久绑定的仓库拓扑。当前
-`robo-hardware` repository 只是组件组合与开发编排容器，不是公共 API 身份。
+“库族”表示统一发布的多个职责模块，不表示共享 runtime、HAL 或必须整体链接的单体库。
+`robo-hardware` 仅是 repository 身份；共享 public vocabulary 为 `hardware`，而模块保留
+自己的 namespace、include root 和 CMake target。例如 Realtime 为 `realtime`、
+`<realtime/...>`、`realtime::realtime`，但消费者统一使用 `find_package(hardware)`。
 
-每个 component 拥有独立 public identity。Realtime 采用：
-
-- C++ namespace：`realtime`；
-- include path：`<realtime/...>`；
-- CMake target：`realtime::realtime`；
-- CMake package：`realtime`。
-
-每个分发组件拥有独立的构建、安装、测试和文档边界，并且可以在不改变上述
-公共身份的前提下迁移到独立仓库。
+本章程 supersedes 早期的 independent-component / standalone-package 约束；模块不得再
+维护独立 build、install、package 或 version 边界。
 
 ## 2. 项目不是什么
 
@@ -174,8 +168,8 @@ canopen --> can
 `serial`、`spi` 和 `can` 不得依赖 `realtime`。应用可以组合组件，但组合使用不构成
 库之间的依赖。
 
-V1 不建立 `core`、`common`、`platform` 等公共库。命名、错误处理、时间语义、
-构建和文档规则的一致性不要求共享运行时代码。
+V1 不建立 `core`、`common`、`platform` 或 `hardware` runtime library。`hardware` 只提供
+header-only 的共享 API vocabulary；这不改变模块之间没有非必要 runtime dependency 的原则。
 
 ## 8. 平台与兼容性方向
 
@@ -218,13 +212,13 @@ V1 成功由可验证工程结果定义，而不是组件数量、协议覆盖�
 
 必须满足：
 
-- `realtime`、`serial`、`spi`、`can` 可独立构建、安装、链接和使用；
+- root configure/build/install、`hardware` package 和模块独立链接均通过；
 - 每个组件具备公开 Interface 契约、最小示例和 Level 1/2 测试；
 - 在 PREEMPT_RT 上建立可重复测量流程并输出延迟、抖动和执行时间报告；
 - 至少一种真实 Serial/RS-485 设备完成 Level 3 验证；
 - 至少一种真实 CAN/CAN FD 设备完成 Level 3 验证；
 - 至少一个真实驱动组合使用 `realtime + serial` 或 `realtime + can`；
-- 安装后的独立消费者测试通过；
+- 安装后的消费者测试可通过 `find_package(hardware)` 使用每个模块 target；
 - 真实项目使用期间无未解决的数据竞争、资源泄漏或生命周期缺陷。
 
 CANopen 不属于 V1 成功条件。

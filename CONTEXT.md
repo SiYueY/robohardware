@@ -2,39 +2,38 @@
 
 ## Repository
 
-`robo-hardware` is a source and development-orchestration repository. It is not a public
-SDK identity and does not own a shared public C++ namespace.
+`robo-hardware` is one Linux C++17 hardware-library project. It has one root build, install
+and CMake package (`hardware`), while producing multiple independently linkable runtime
+libraries. It is not a public C++ namespace.
 
-## Component
+## Module
 
-A component is an independently consumable library with its own source tree, build, tests,
-installation, documentation, version, and public identity. Components may share this
-repository without becoming submodules of a common runtime or framework.
+A module is a responsibility-local library within the unified project. Its public identity is
+its namespace, include root and CMake target; all modules are discovered through
+`find_package(hardware CONFIG REQUIRED)`. Module boundaries do not imply separate builds,
+installs, packages or versions.
 
 ## Public identity
 
-A component's public identity is the stable combination of its namespace, include root,
-CMake target, and CMake package. It belongs to the component rather than to repository
-topology.
+`hardware` is the shared public vocabulary and package-discovery identity. It owns
+`<hardware/result.hpp>` and `hardware::Result<T, E>`; it is header-only and is not a runtime
+library or a device framework.
 
 ## Realtime
 
-`realtime` is an independent Linux C++17 realtime-primitives library. Its public identity is
-the `realtime` namespace, `<realtime/...>` include root, `realtime::realtime` CMake target,
-and `realtime` package.
+`realtime` is the deterministic-execution and RT/NRT exchange module. Its public identity is
+`realtime`, `<realtime/...>` and `realtime::realtime`.
 
 ## Serial
 
-`serial` is an independent Linux C++17 TTY byte-stream transport library. Its public identity
-is the `serial` namespace, `<serial/...>` include root, `serial::serial` CMake target, and
-`serial` package. It has no production dependency on `realtime`; applications compose the two
-components while retaining independent ownership and timing contracts.
+`serial` is the TTY byte-stream transport module. Its public identity is `serial`,
+`<serial/...>` and `serial::serial`. A read/write is one low-level transfer attempt: a
+successful write reports bytes accepted by the kernel/TTY driver, not physical transmission.
 
 ## SPI
 
-`spi` is an independent Linux C++17 synchronous SPI-transaction transport library. Its public
-identity is the `spi` namespace, `<spi/...>` include root, `spi::spi` CMake target, and `spi`
-package. It has no production dependency on the other components.
+`spi` is the synchronous Linux spidev-transaction module. Its public identity is `spi`,
+`<spi/...>` and `spi::spi`.
 
 **SPI Device**:
 A move-only owner of one Linux spidev file descriptor, configured when opened and used for
@@ -43,3 +42,9 @@ synchronous SPI transactions.
 **SPI transaction**:
 One caller-initiated synchronous transfer through a single spidev message, with a single
 configured SPI Device.
+
+## CAN
+
+`can` is the SocketCAN RAW transport module. Its public identity is `can`, `<can/...>` and
+`can::can`. A received bus event is represented by `ReceivedFrame`, which distinguishes
+Classical, FD and error frames; `can::Error` represents transport-operation failure only.

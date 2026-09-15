@@ -18,7 +18,7 @@
 
 ## 2. V1 范围
 
-V1 包含四个独立分发组件，每个组件对应一个 production library：
+V1 包含四个职责独立的模块，每个模块对应一个 production library：
 
 1. `realtime`：确定性执行基础和 RT/NRT 数据交换原语；
 2. `serial`：Linux UART/RS-485 transport；
@@ -32,17 +32,18 @@ V1 不包含 CANopen。CANopen 必须作为 transport 稳定后的独立里程�
 
 ### 3.1 构建与交付
 
-每个组件必须：
+项目必须：
 
-- 能够独立构建；
-- 能够独立安装；
-- 导出独立的 CMake target；
-- 被安装树之外的最小消费者项目发现并链接；
-- 不强制链接其他 robo-hardware component；
+- 提供单一 root configure/build/install；
+- 安装单一 `hardware` CMake package；
+- 导出各模块独立的 CMake target；
+- 允许安装树之外的最小消费者通过 `find_package(hardware)` 发现并链接模块；
+- 不因 package discovery 强制链接其他 robo-hardware module；
 - 提供最小可运行示例；
 - 提供组件级 Interface 契约文档。
 
-V1 不得建立所有组件共同依赖的 `core`、`common` 或 `platform` 库。
+V1 不得建立 `core`、`common`、`platform` 或 `hardware` runtime library；`hardware` 仅可
+提供 header-only 的公共 vocabulary。
 
 ### 3.2 平台
 
@@ -55,11 +56,12 @@ V1 不得建立所有组件共同依赖的 `core`、`common` 或 `platform` 库�
 ### 3.3 错误处理
 
 - 可预期运行时失败必须通过值返回表达；
-- 系统错误必须尽可能保留为 `std::error_code`；
+- 可恢复失败必须使用 `hardware::Result<T, E>`，其中 `E` 是模块本地简单枚举；
 - 超时、设备断开、总线错误和“不支持”不得使用异常作为正常控制流；
 - 实时线程可调用的 API 必须保证不抛异常；
-- V1 不得引入公共 `Result<T>` 或第三方 `expected` 类型；
-- 当操作需要同时返回数据和结束原因时，必须定义组件专用的窄小结果结构。
+- V1 使用公共 `hardware::Result<T, E>`，但不得引入第三方 `expected` 或平行通用结果类型；
+- `Result` 的 value 与 error 严格互斥。Serial read/write 是单次 low-level transfer
+  attempt；成功 transfer 立即返回 value，不在内部继续循环以组合 progress 与结束原因。
 
 是否允许异常表达编程错误或初始化阶段不可恢复错误，仍需在 API 设计前决定。
 
@@ -402,7 +404,7 @@ Realtime 并发原语还必须进行 wrap-around、满/空竞争、长时间压�
 
 V1 在以下条件全部满足时完成：
 
-1. 四个组件满足独立构建、安装、链接和消费者测试；
+1. root build/install、`hardware` package、四个模块 target 和消费者测试均通过；
 2. 所有必须能力均有公共契约和最小示例；
 3. Level 1 和 Level 2 测试稳定通过；
 4. Realtime 建立 PREEMPT_RT 可重复测量流程和报告；
@@ -419,7 +421,7 @@ V1 在以下条件全部满足时完成：
 
 ### Phase 1：工程基线
 
-建立独立 CMake targets、安装导出、消费者测试、CI、静态检查、sanitizer、
+完成 Architecture Rebaseline，并建立 root CMake、模块 export、消费者测试、CI、静态检查、sanitizer、
 文档和示例结构。
 
 ### Phase 2：Realtime
@@ -454,10 +456,10 @@ CANopen 接口骨架作为 V1 完整性的替代品。
 - `Buffer` 第一次写入前的读取语义；
 - 并发原语的算法、原子能力门槛和验证方法；
 - duration 与 absolute time point 的公共 deadline 表达；
-- Serial 部分传输结果结构和停止原因集合；
+- Serial 的单次 transfer-attempt API 与 `drain()` 的 completion 语义；
 - drain/send-complete 的有限等待与取消语义；
 - RS-485 首批验证 driver 和硬件；
-- Classical CAN/CAN FD 公共 frame model；
+- `ReceivedFrame` 的 Classical CAN / CAN FD / ErrorFrame tagged-value model；
 - 接收软件时间戳的 clock domain 和返回表示；
 - 首批 CAN/CAN FD 硬件和 PREEMPT_RT 验证环境。
 
