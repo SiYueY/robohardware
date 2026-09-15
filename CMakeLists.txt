@@ -65,8 +65,15 @@ if(BUILD_TESTING)
     target_link_libraries(${module}_result_behavior_test PRIVATE ${module}::${module})
     add_test(NAME ${module}.result_behavior COMMAND ${module}_result_behavior_test)
   endforeach()
-  add_executable(spi_device_behavior_test tests/spi/device_behavior_test.cpp)
-  target_link_libraries(spi_device_behavior_test PRIVATE spi::spi)
+  add_executable(spi_device_behavior_test
+    src/spi/device.cpp
+    tests/spi/device_behavior_test.cpp
+    tests/spi/spidev_fake.cpp)
+  target_compile_features(spi_device_behavior_test PRIVATE cxx_std_17)
+  target_include_directories(spi_device_behavior_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/spi
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/spi)
   add_test(NAME spi.device_behavior COMMAND spi_device_behavior_test)
 endif()
 
