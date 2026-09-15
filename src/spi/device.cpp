@@ -1,76 +1,89 @@
 #include <spi/device.hpp>
 
-#include "spidev_adapter.hpp"
+#include "spidev.hpp"
 
 #include <cerrno>
 #include <cstdint>
-#include <fcntl.h>
+
 #include <linux/spi/spi.h>
-#include <limits>
-#include <system_error>
 
 namespace spi {
 namespace {
 
-struct NativeConfig final {
-    std::uint32_t mode;
-    std::uint8_t bits_per_word;
-    std::uint32_t max_speed_hz;
-};
-
 enum class ConfigStage { None, Mode, BitsPerWord, MaxSpeed };
 
-[[nodiscard]] std::error_code generic(std::errc value) noexcept {
-    return std::make_error_code(value);
+[[nodiscard]] Error to_error(int native_error) noexcept { return static_cast<Error>(native_error); }
+
+[[nodiscard]] hardware::Result<void, Error> to_failure(int native_error) noexcept {
+    return hardware::Result<void, Error>::failure(to_error(native_error));
 }
 
-[[nodiscard]] std::error_code system(int value) noexcept { return {value, std::system_category()}; }
-
-[[nodiscard]] bool valid(Mode value) noexcept {
-    return value == Mode::Mode0 || value == Mode::Mode1 || value == Mode::Mode2 ||
-           value == Mode::Mode3;
+[[nodiscard]] bool is_valid(Mode mode) noexcept {
+    return mode == Mode::Mode0 || mode == Mode::Mode1 || mode == Mode::Mode2 || mode == Mode::Mode3;
 }
 
-[[nodiscard]] bool valid(BitOrder value) noexcept {
-    return value == BitOrder::MsbFirst || value == BitOrder::LsbFirst;
+[[nodiscard]] bool is_valid(BitOrder bit_order) noexcept {
+    return bit_order == BitOrder::MsbFirst || bit_order == BitOrder::LsbFirst;
 }
 
-[[nodiscard]] std::uint32_t requested_mode(
-    Mode mode, BitOrder bit_order, std::uint32_t original) noexcept {
-    auto candidate = original & ~(SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST);
+[[nodiscard]] bool is_valid(const Config& config) noexcept {
+    return is_valid(config.mode) && is_valid(config.bit_order) && config.max_speed > 0 &&
+           config.bits_per_word > 0;
+}
+
+[[nodiscard]] std::uint32_t to_spidev_mode(
+    Mode mode, BitOrder bit_order, std::uint32_t original_mode) noexcept {
+    auto spidev_mode = original_mode & ~(SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST);
     switch (mode) {
         case Mode::Mode0:
             break;
         case Mode::Mode1:
-            candidate |= SPI_CPHA;
+            spidev_mode |= SPI_CPHA;
             break;
         case Mode::Mode2:
-            candidate |= SPI_CPOL;
+            spidev_mode |= SPI_CPOL;
             break;
         case Mode::Mode3:
-            candidate |= SPI_CPOL | SPI_CPHA;
+            spidev_mode |= SPI_CPOL | SPI_CPHA;
             break;
     }
-    if (bit_order == BitOrder::LsbFirst) candidate |= SPI_LSB_FIRST;
-    return candidate;
+    if (bit_order == BitOrder::LsbFirst) spidev_mode |= SPI_LSB_FIRST;
+    return spidev_mode;
 }
 
-[[nodiscard]] bool mode_matches(std::uint32_t actual, std::uint32_t requested) noexcept {
+[[nodiscard]] bool mode_matches(std::uint32_t actual, std::uint32_t expected) noexcept {
     constexpr std::uint32_t kOwnedModeBits = SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST;
-    return (actual & kOwnedModeBits) == (requested & kOwnedModeBits);
+    return (actual & kOwnedModeBits) == (expected & kOwnedModeBits);
 }
 
-void restore(int fd, const NativeConfig& original, ConfigStage stage) noexcept {
+void restore_config(int fd, const spidev::Config& original, ConfigStage stage) noexcept {
     if (stage == ConfigStage::MaxSpeed) {
-        static_cast<void>(spidev_adapter::write_max_speed_hz(fd, original.max_speed_hz));
+        static_cast<void>(spidev::write_max_speed(fd, original.max_speed));
     }
     if (stage == ConfigStage::MaxSpeed || stage == ConfigStage::BitsPerWord) {
-        static_cast<void>(spidev_adapter::write_bits_per_word(fd, original.bits_per_word));
+        static_cast<void>(spidev::write_bits_per_word(fd, original.bits_per_word));
     }
     if (stage != ConfigStage::None) {
-        static_cast<void>(spidev_adapter::write_mode32(fd, original.mode));
+        static_cast<void>(spidev::write_mode(fd, original.mode));
     }
-    static_cast<void>(spidev_adapter::close_fd(fd));
+}
+
+[[nodiscard]] hardware::Result<void, Error> fail_open(int fd, int native_error) noexcept {
+    static_cast<void>(spidev::close(fd));
+    return to_failure(native_error);
+}
+
+[[nodiscard]] hardware::Result<void, Error> fail_configuration(
+    int fd, const spidev::Config& original, ConfigStage stage, int native_error) noexcept {
+    restore_config(fd, original, stage);
+    return fail_open(fd, native_error);
+}
+
+[[nodiscard]] hardware::Result<void, Error> configuration_mismatch(
+    int fd, const spidev::Config& original, ConfigStage stage) noexcept {
+    restore_config(fd, original, stage);
+    static_cast<void>(spidev::close(fd));
+    return hardware::Result<void, Error>::failure(Error::ConfigurationMismatch);
 }
 
 }  // namespace
@@ -81,158 +94,79 @@ Device::Device(Device&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
 
 bool Device::is_open() const noexcept { return fd_ >= 0; }
 
-namespace {
-
-std::error_code open_legacy(int& fd_, const std::string& path, const Config& config) noexcept {
-    if (fd_ >= 0) return generic(std::errc::device_or_resource_busy);
-    if (path.empty() || path.find('\0') != std::string::npos) {
-        return generic(std::errc::invalid_argument);
-    }
-    if (!valid(config.mode) || !valid(config.bit_order) || config.max_speed_hz == 0 ||
-        config.bits_per_word == 0) {
-        return generic(std::errc::invalid_argument);
+hardware::Result<void, Error> Device::open(const std::string& path, const Config& config) noexcept {
+    if (is_open()) return hardware::Result<void, Error>::failure(Error::AlreadyOpen);
+    if (path.empty() || path.find('\0') != std::string::npos || !is_valid(config)) {
+        return hardware::Result<void, Error>::failure(Error::InvalidArgument);
     }
 
-    const auto opened = spidev_adapter::open_path(path.c_str(), O_RDWR | O_CLOEXEC);
-    if (opened.value < 0) return system(opened.error);
-    const auto fd = opened.value;
+    const int fd = spidev::open(path.c_str());
+    if (fd < 0) return to_failure(errno);
 
-    NativeConfig original{};
-    const auto mode_captured = spidev_adapter::read_mode32(fd, original.mode);
-    if (mode_captured.value < 0) {
-        static_cast<void>(spidev_adapter::close_fd(fd));
-        return mode_captured.error == ENOTTY
-                   ? generic(std::errc::inappropriate_io_control_operation)
-                   : system(mode_captured.error);
-    }
-    const auto bits_captured = spidev_adapter::read_bits_per_word(fd, original.bits_per_word);
-    if (bits_captured.value < 0) {
-        static_cast<void>(spidev_adapter::close_fd(fd));
-        return system(bits_captured.error);
-    }
-    const auto speed_captured = spidev_adapter::read_max_speed_hz(fd, original.max_speed_hz);
-    if (speed_captured.value < 0) {
-        static_cast<void>(spidev_adapter::close_fd(fd));
-        return system(speed_captured.error);
+    spidev::Config original{};
+    if (spidev::read_config(fd, original) < 0) return fail_open(fd, errno);
+
+    const std::uint32_t requested_spidev_mode =
+        to_spidev_mode(config.mode, config.bit_order, original.mode);
+    if (spidev::write_mode(fd, requested_spidev_mode) < 0) {
+        return fail_configuration(fd, original, ConfigStage::Mode, errno);
     }
 
-    const auto candidate_mode = requested_mode(config.mode, config.bit_order, original.mode);
-    auto stage = ConfigStage::Mode;
-    const auto mode_written = spidev_adapter::write_mode32(fd, candidate_mode);
-    if (mode_written.value < 0) {
-        const auto error = system(mode_written.error);
-        restore(fd, original, stage);
-        return error;
+    spidev::Config actual{};
+    if (spidev::read_config(fd, actual) < 0) {
+        return fail_configuration(fd, original, ConfigStage::Mode, errno);
     }
-    std::uint32_t actual_mode{};
-    const auto mode_readback = spidev_adapter::read_mode32(fd, actual_mode);
-    if (mode_readback.value < 0 || !mode_matches(actual_mode, candidate_mode)) {
-        const auto error =
-            mode_readback.value < 0 ? system(mode_readback.error) : generic(std::errc::io_error);
-        restore(fd, original, stage);
-        return error;
+    if (!mode_matches(actual.mode, requested_spidev_mode)) {
+        return configuration_mismatch(fd, original, ConfigStage::Mode);
     }
 
-    stage = ConfigStage::BitsPerWord;
-    const auto bits_written = spidev_adapter::write_bits_per_word(fd, config.bits_per_word);
-    if (bits_written.value < 0) {
-        const auto error = system(bits_written.error);
-        restore(fd, original, stage);
-        return error;
+    if (spidev::write_bits_per_word(fd, config.bits_per_word) < 0) {
+        return fail_configuration(fd, original, ConfigStage::BitsPerWord, errno);
     }
-    std::uint8_t actual_bits_per_word{};
-    const auto bits_readback = spidev_adapter::read_bits_per_word(fd, actual_bits_per_word);
-    if (bits_readback.value < 0 || actual_bits_per_word != config.bits_per_word) {
-        const auto error =
-            bits_readback.value < 0 ? system(bits_readback.error) : generic(std::errc::io_error);
-        restore(fd, original, stage);
-        return error;
+    if (spidev::read_config(fd, actual) < 0) {
+        return fail_configuration(fd, original, ConfigStage::BitsPerWord, errno);
+    }
+    if (actual.bits_per_word != config.bits_per_word) {
+        return configuration_mismatch(fd, original, ConfigStage::BitsPerWord);
     }
 
-    stage = ConfigStage::MaxSpeed;
-    const auto speed_written = spidev_adapter::write_max_speed_hz(fd, config.max_speed_hz);
-    if (speed_written.value < 0) {
-        const auto error = system(speed_written.error);
-        restore(fd, original, stage);
-        return error;
+    if (spidev::write_max_speed(fd, config.max_speed) < 0) {
+        return fail_configuration(fd, original, ConfigStage::MaxSpeed, errno);
     }
-    std::uint32_t actual_max_speed_hz{};
-    const auto speed_readback = spidev_adapter::read_max_speed_hz(fd, actual_max_speed_hz);
-    if (speed_readback.value < 0 || actual_max_speed_hz != config.max_speed_hz) {
-        const auto error =
-            speed_readback.value < 0 ? system(speed_readback.error) : generic(std::errc::io_error);
-        restore(fd, original, stage);
-        return error;
+    if (spidev::read_config(fd, actual) < 0) {
+        return fail_configuration(fd, original, ConfigStage::MaxSpeed, errno);
+    }
+    if (actual.max_speed != config.max_speed) {
+        return configuration_mismatch(fd, original, ConfigStage::MaxSpeed);
     }
 
     fd_ = fd;
-    return {};
+    return hardware::Result<void, Error>::success();
 }
 
-std::error_code close_legacy(int& fd_) noexcept {
-    if (fd_ < 0) return {};
-    const auto fd = fd_;
-    fd_ = -1;
-    const auto closed = spidev_adapter::close_fd(fd);
-    return closed.value < 0 ? system(closed.error) : std::error_code{};
-}
-
-std::error_code transfer_legacy(
-    int fd_, const std::byte* tx, std::byte* rx, std::size_t size) noexcept {
-    if (fd_ < 0) return generic(std::errc::bad_file_descriptor);
-    if (size == 0) return {};
-    if (tx == nullptr && rx == nullptr) return generic(std::errc::invalid_argument);
-    constexpr auto kMaxLength =
-        static_cast<std::size_t>(std::numeric_limits<int>::max()) <
-                static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())
-            ? static_cast<std::size_t>(std::numeric_limits<int>::max())
-            : static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max());
-    if (size > kMaxLength) return generic(std::errc::value_too_large);
-
-    spi_ioc_transfer value{};
-    value.tx_buf = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(tx));
-    value.rx_buf = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(rx));
-    value.len = static_cast<__u32>(size);
-    const auto transferred = spidev_adapter::transfer(fd_, value);
-    if (transferred.value < 0) return system(transferred.error);
-    if (static_cast<std::size_t>(transferred.value) != size) {
-        return generic(std::errc::io_error);
-    }
-    return {};
-}
-
-}  // namespace
-
-namespace {
-[[nodiscard]] Error map_error(const std::error_code& e) noexcept {
-    if (e == std::errc::invalid_argument || e == std::errc::value_too_large)
-        return Error::InvalidArgument;
-    if (e == std::errc::device_or_resource_busy) return Error::AlreadyOpen;
-    if (e == std::errc::bad_file_descriptor) return Error::NotOpen;
-    if (e == std::errc::permission_denied) return Error::PermissionDenied;
-    if (e == std::errc::no_such_file_or_directory || e == std::errc::no_such_device)
-        return Error::DeviceNotFound;
-    if (e == std::errc::operation_not_supported ||
-        e == std::errc::inappropriate_io_control_operation)
-        return Error::Unsupported;
-    return Error::Io;
-}
-}  // namespace
-hardware::Result<void, Error> Device::open(const std::string& p, const Config& c) noexcept {
-    const auto e = open_legacy(fd_, p, c);
-    return e ? hardware::Result<void, Error>::failure(map_error(e))
-             : hardware::Result<void, Error>::success();
-}
 hardware::Result<void, Error> Device::close() noexcept {
-    const auto e = close_legacy(fd_);
-    return e ? hardware::Result<void, Error>::failure(map_error(e))
-             : hardware::Result<void, Error>::success();
+    if (!is_open()) return hardware::Result<void, Error>::success();
+
+    const int fd = fd_;
+    fd_ = -1;
+    if (spidev::close(fd) < 0) return to_failure(errno);
+    return hardware::Result<void, Error>::success();
 }
+
 hardware::Result<void, Error> Device::transfer(
-    const std::byte* t, std::byte* r, std::size_t n) noexcept {
-    const auto e = transfer_legacy(fd_, t, r, n);
-    return e ? hardware::Result<void, Error>::failure(map_error(e))
-             : hardware::Result<void, Error>::success();
+    const std::byte* tx, std::byte* rx, std::size_t size) noexcept {
+    if (!is_open()) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    if (size == 0) return hardware::Result<void, Error>::success();
+    if (tx == nullptr && rx == nullptr) {
+        return hardware::Result<void, Error>::failure(Error::InvalidArgument);
+    }
+
+    const int transferred = spidev::message(fd_, tx, rx, size);
+    if (transferred < 0) return to_failure(errno);
+    if (static_cast<std::size_t>(transferred) != size) {
+        return hardware::Result<void, Error>::failure(Error::TransferMismatch);
+    }
+    return hardware::Result<void, Error>::success();
 }
 
 }  // namespace spi

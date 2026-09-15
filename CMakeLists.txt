@@ -43,7 +43,7 @@ add_library(serial SHARED
   src/serial/timeout.cpp src/serial/tty_adapter_linux.cpp)
 hardware_module(serial serialTargets serial)
 
-add_library(spi SHARED src/spi/device.cpp src/spi/spidev_adapter_linux.cpp)
+add_library(spi SHARED src/spi/device.cpp src/spi/spidev.cpp)
 hardware_module(spi spiTargets spi)
 
 add_library(can SHARED src/can/can.cpp)
@@ -65,6 +65,9 @@ if(BUILD_TESTING)
     target_link_libraries(${module}_result_behavior_test PRIVATE ${module}::${module})
     add_test(NAME ${module}.result_behavior COMMAND ${module}_result_behavior_test)
   endforeach()
+  add_executable(spi_device_behavior_test tests/spi/device_behavior_test.cpp)
+  target_link_libraries(spi_device_behavior_test PRIVATE spi::spi)
+  add_test(NAME spi.device_behavior COMMAND spi_device_behavior_test)
 endif()
 
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

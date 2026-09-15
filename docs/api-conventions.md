@@ -5,6 +5,10 @@
 本文定义所有模块共享的 public interface 约定；模块文档只记录自身具体的错误值和
 operation contract。
 
+所有 project-owned 标识符的命名与物理单位标注均遵循
+[Coding Conventions](coding-conventions.md)。该规范同时适用于 public interface 和 private
+implementation。
+
 ## Return semantics
 
 | 情形 | Return type |

@@ -851,14 +851,13 @@ namespace spi {
 
 enum class Error : std::uint8_t {
     InvalidArgument,
+    // Other Linux errno values use their complete semantic names.
+    InappropriateIoControlOperation,
+    InputOutputError,
+    // Device-local errors retain concise names.
     AlreadyOpen,
     NotOpen,
-    Unsupported,
     ConfigurationMismatch,
-    PermissionDenied,
-    DeviceNotFound,
-    Busy,
-    Io,
 };
 
 }
@@ -882,11 +881,11 @@ message
 ```cpp
 if (!result) {
     switch (result.error()) {
-        case spi::Error::Unsupported:
+        case spi::Error::InappropriateIoControlOperation:
             ...
             break;
 
-        case spi::Error::Io:
+        case spi::Error::InputOutputError:
             ...
             break;
     }
