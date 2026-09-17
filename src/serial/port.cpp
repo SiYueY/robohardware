@@ -6,119 +6,58 @@
 #include <fcntl.h>
 #include <limits>
 #include <poll.h>
-#include <system_error>
+#include <sys/ioctl.h>
 #include <termios.h>
+#include <type_traits>
 
 namespace serial {
-
-struct TransferLegacy final {
-    std::size_t bytes_transferred;
-    std::error_code error;
-};
-
-// This private accessor keeps configuration types closed to consumers while
-// allowing the Linux implementation helpers to inspect a requested value.
-struct PortAccess final {
-    [[nodiscard]] static bool is_immediate(const Timeout& value) noexcept {
-        return value.kind_ == Timeout::Kind::Immediate;
-    }
-    [[nodiscard]] static bool is_infinite(const Timeout& value) noexcept {
-        return value.kind_ == Timeout::Kind::Infinite;
-    }
-    [[nodiscard]] static bool is_finite(const Timeout& value) noexcept {
-        return value.kind_ == Timeout::Kind::Finite;
-    }
-    [[nodiscard]] static std::chrono::nanoseconds duration(const Timeout& value) noexcept {
-        return value.duration_;
-    }
-    [[nodiscard]] static std::uint32_t baud_rate(const PortConfig& value) noexcept {
-        return value.baud_rate_;
-    }
-    [[nodiscard]] static DataBits data_bits(const PortConfig& value) noexcept {
-        return value.data_bits_;
-    }
-    [[nodiscard]] static Parity parity(const PortConfig& value) noexcept { return value.parity_; }
-    [[nodiscard]] static StopBits stop_bits(const PortConfig& value) noexcept {
-        return value.stop_bits_;
-    }
-    [[nodiscard]] static FlowControl flow_control(const PortConfig& value) noexcept {
-        return value.flow_control_;
-    }
-    [[nodiscard]] static const Rs485Config& rs485(const PortConfig& value) noexcept {
-        return value.rs485_;
-    }
-    [[nodiscard]] static bool enabled(const Rs485Config& value) noexcept { return value.enabled_; }
-    [[nodiscard]] static RtsLevel rts_during_send(const Rs485Config& value) noexcept {
-        return value.rts_during_send_;
-    }
-    [[nodiscard]] static RtsLevel rts_after_send(const Rs485Config& value) noexcept {
-        return value.rts_after_send_;
-    }
-    [[nodiscard]] static std::chrono::milliseconds delay_before_send(
-        const Rs485Config& value) noexcept {
-        return value.delay_before_send_;
-    }
-    [[nodiscard]] static std::chrono::milliseconds delay_after_send(
-        const Rs485Config& value) noexcept {
-        return value.delay_after_send_;
-    }
-};
-
 namespace {
-
 constexpr int kClosedFd = -1;
+constexpr long kNanosecondsPerSecond = 1000000000L;
 
-[[nodiscard]] std::error_code generic(std::errc value) noexcept {
-    return std::make_error_code(value);
+[[nodiscard]] bool unsupported_errno(int error) noexcept {
+    return error == ENOTTY || error == EOPNOTSUPP || error == ENOSYS;
 }
-[[nodiscard]] std::error_code system(int value) noexcept { return {value, std::system_category()}; }
-[[nodiscard]] bool unsupported(int value) noexcept {
-    return value == ENOTTY || value == EOPNOTSUPP || value == ENOSYS;
+[[nodiscard]] bool disconnected_errno(int error) noexcept {
+    return error == EIO || error == ENXIO || error == ENODEV || error == ECONNRESET;
 }
-[[nodiscard]] bool valid(DataBits v) noexcept {
-    return v == DataBits::Five || v == DataBits::Six || v == DataBits::Seven ||
-           v == DataBits::Eight;
+[[nodiscard]] Error errno_error(int error) noexcept {
+    if (error == EACCES || error == EPERM) return Error::PermissionDenied;
+    if (error == ENOENT) return Error::DeviceNotFound;
+    if (error == EBUSY) return Error::Busy;
+    if (unsupported_errno(error)) return Error::Unsupported;
+    if (disconnected_errno(error)) return Error::Disconnected;
+    return Error::Io;
 }
-[[nodiscard]] bool valid(Parity v) noexcept {
-    return v == Parity::None || v == Parity::Even || v == Parity::Odd;
+[[nodiscard]] bool valid(DataBits value) noexcept {
+    return value == DataBits::Five || value == DataBits::Six || value == DataBits::Seven ||
+           value == DataBits::Eight;
 }
-[[nodiscard]] bool valid(StopBits v) noexcept { return v == StopBits::One || v == StopBits::Two; }
-[[nodiscard]] bool valid(FlowControl v) noexcept {
-    return v == FlowControl::None || v == FlowControl::Software || v == FlowControl::Hardware;
+[[nodiscard]] bool valid(Parity value) noexcept {
+    return value == Parity::None || value == Parity::Odd || value == Parity::Even ||
+           value == Parity::Mark || value == Parity::Space;
 }
-[[nodiscard]] bool valid(RtsLevel v) noexcept {
-    return v == RtsLevel::Asserted || v == RtsLevel::Deasserted;
+[[nodiscard]] bool valid(StopBits value) noexcept {
+    return value == StopBits::One || value == StopBits::Two;
 }
-[[nodiscard]] bool valid(FlushDirection v) noexcept {
-    return v == FlushDirection::Input || v == FlushDirection::Output || v == FlushDirection::Both;
+[[nodiscard]] bool valid(FlowControl value) noexcept {
+    return value == FlowControl::None || value == FlowControl::XonXoff ||
+           value == FlowControl::RtsCts;
 }
-
-[[nodiscard]] bool baud_speed(std::uint32_t baud, speed_t& speed) noexcept {
-#define SERIAL_SPEED(n) \
-    case n:             \
-        speed = B##n;   \
+[[nodiscard]] bool baud_speed(std::uint32_t baud_rate, speed_t& speed) noexcept {
+#define SERIAL_SPEED(value) \
+    case value:             \
+        speed = B##value;   \
         return true
-    switch (baud) {
+    switch (baud_rate) {
         SERIAL_SPEED(50);
         SERIAL_SPEED(75);
         SERIAL_SPEED(110);
-#ifdef B134
-        SERIAL_SPEED(134);
-#endif
-#ifdef B150
-        SERIAL_SPEED(150);
-#endif
-#ifdef B200
-        SERIAL_SPEED(200);
-#endif
         SERIAL_SPEED(300);
         SERIAL_SPEED(600);
         SERIAL_SPEED(1200);
         SERIAL_SPEED(2400);
         SERIAL_SPEED(4800);
-#ifdef B1800
-        SERIAL_SPEED(1800);
-#endif
         SERIAL_SPEED(9600);
         SERIAL_SPEED(19200);
         SERIAL_SPEED(38400);
@@ -166,425 +105,425 @@ constexpr int kClosedFd = -1;
     }
 #undef SERIAL_SPEED
 }
-
-[[nodiscard]] std::error_code check_config(const PortConfig& c, speed_t& speed) noexcept {
-    const auto& rs485 = PortAccess::rs485(c);
-    if (!valid(PortAccess::data_bits(c)) || !valid(PortAccess::parity(c)) ||
-        !valid(PortAccess::stop_bits(c)) || !valid(PortAccess::flow_control(c)) ||
-        !valid(PortAccess::rts_during_send(rs485)) || !valid(PortAccess::rts_after_send(rs485)) ||
-        PortAccess::delay_before_send(rs485).count() < 0 ||
-        PortAccess::delay_after_send(rs485).count() < 0 ||
-        PortAccess::delay_before_send(rs485).count() > std::numeric_limits<std::uint32_t>::max() ||
-        PortAccess::delay_after_send(rs485).count() > std::numeric_limits<std::uint32_t>::max() ||
-        !baud_speed(PortAccess::baud_rate(c), speed)) {
-        return generic(std::errc::invalid_argument);
-    }
-#ifndef CRTSCTS
-    if (PortAccess::flow_control(c) == FlowControl::Hardware) {
-        return generic(std::errc::operation_not_supported);
-    }
+[[nodiscard]] Error validate_config(const Config& config, speed_t& speed) noexcept {
+    if (!valid(config.data_bits) || !valid(config.parity) || !valid(config.stop_bits) ||
+        !valid(config.flow_control) || config.rs485.delay_before_send.count() < 0 ||
+        config.rs485.delay_after_send.count() < 0 ||
+        config.rs485.delay_before_send.count() > std::numeric_limits<std::uint32_t>::max() ||
+        config.rs485.delay_after_send.count() > std::numeric_limits<std::uint32_t>::max() ||
+        !baud_speed(config.baud_rate, speed))
+        return Error::InvalidArgument;
+#ifndef CMSPAR
+    if (config.parity == Parity::Mark || config.parity == Parity::Space) return Error::Unsupported;
 #endif
-    return {};
+#ifndef CRTSCTS
+    if (config.flow_control == FlowControl::RtsCts) return Error::Unsupported;
+#endif
+    return Error::Io;
 }
-
-void raw(termios& t) noexcept {
-    t.c_iflag &=
+void apply_raw_mode(termios& attributes) noexcept {
+    attributes.c_iflag &=
         ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | INPCK | IGNPAR | IXON |
           IXOFF | IXANY);
-    t.c_oflag &= ~OPOST;
-    t.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
-    t.c_cflag |= CREAD | CLOCAL;
-    t.c_cc[VMIN] = 0;
-    t.c_cc[VTIME] = 0;
+    attributes.c_oflag &= ~OPOST;
+    attributes.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    attributes.c_cflag |= CREAD | CLOCAL;
+    attributes.c_cc[VMIN] = 0;
+    attributes.c_cc[VTIME] = 0;
 }
-
-[[nodiscard]] bool set_config(termios& t, const PortConfig& c, speed_t speed) noexcept {
-    raw(t);
-    t.c_cflag &= ~(CSIZE | PARENB | PARODD | CSTOPB);
-#ifdef CRTSCTS
-    t.c_cflag &= ~CRTSCTS;
+[[nodiscard]] bool apply_configuration(
+    termios& attributes, const Config& config, speed_t speed) noexcept {
+    apply_raw_mode(attributes);
+    attributes.c_cflag &= ~(CSIZE | PARENB | PARODD | CSTOPB);
+#ifdef CMSPAR
+    attributes.c_cflag &= ~CMSPAR;
 #endif
-    switch (PortAccess::data_bits(c)) {
-        case DataBits::Five:
-            t.c_cflag |= CS5;
-            break;
-        case DataBits::Six:
-            t.c_cflag |= CS6;
-            break;
-        case DataBits::Seven:
-            t.c_cflag |= CS7;
-            break;
-        case DataBits::Eight:
-            t.c_cflag |= CS8;
-            break;
-        default:
-            return false;
-    }
-    if (PortAccess::parity(c) != Parity::None) t.c_cflag |= PARENB;
-    if (PortAccess::parity(c) == Parity::Odd) t.c_cflag |= PARODD;
-    if (PortAccess::stop_bits(c) == StopBits::Two) t.c_cflag |= CSTOPB;
-    if (PortAccess::flow_control(c) == FlowControl::Software) t.c_iflag |= IXON | IXOFF;
 #ifdef CRTSCTS
-    if (PortAccess::flow_control(c) == FlowControl::Hardware) t.c_cflag |= CRTSCTS;
+    attributes.c_cflag &= ~CRTSCTS;
 #endif
-    return cfsetispeed(&t, speed) == 0 && cfsetospeed(&t, speed) == 0;
+    attributes.c_cflag |= config.data_bits == DataBits::Five    ? CS5
+                          : config.data_bits == DataBits::Six   ? CS6
+                          : config.data_bits == DataBits::Seven ? CS7
+                                                                : CS8;
+    if (config.parity != Parity::None) attributes.c_cflag |= PARENB;
+    if (config.parity == Parity::Odd || config.parity == Parity::Mark) attributes.c_cflag |= PARODD;
+#ifdef CMSPAR
+    if (config.parity == Parity::Mark || config.parity == Parity::Space)
+        attributes.c_cflag |= CMSPAR;
+#endif
+    if (config.stop_bits == StopBits::Two) attributes.c_cflag |= CSTOPB;
+    if (config.flow_control == FlowControl::XonXoff) attributes.c_iflag |= IXON | IXOFF;
+#ifdef CRTSCTS
+    if (config.flow_control == FlowControl::RtsCts) attributes.c_cflag |= CRTSCTS;
+#endif
+    return ::cfsetispeed(&attributes, speed) == 0 && ::cfsetospeed(&attributes, speed) == 0;
 }
-
-[[nodiscard]] bool matches(const termios& t, const PortConfig& c, speed_t speed) noexcept {
+[[nodiscard]] bool termios_matches(
+    const termios& attributes, const Config& config, speed_t speed) noexcept {
+    const tcflag_t expected_input = config.flow_control == FlowControl::XonXoff ? IXON | IXOFF : 0;
     const tcflag_t raw_input =
         IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | INPCK | IGNPAR | IXANY;
-    const tcflag_t software =
-        PortAccess::flow_control(c) == FlowControl::Software ? IXON | IXOFF : 0;
-    if ((t.c_iflag & (raw_input | IXON | IXOFF)) != software || (t.c_oflag & OPOST) ||
-        (t.c_lflag & (ECHO | ECHONL | ICANON | ISIG | IEXTEN)) ||
-        (t.c_cflag & (CREAD | CLOCAL)) != (CREAD | CLOCAL) || t.c_cc[VMIN] != 0 ||
-        t.c_cc[VTIME] != 0 || cfgetispeed(&t) != speed || cfgetospeed(&t) != speed)
+    if ((attributes.c_iflag & (raw_input | IXON | IXOFF)) != expected_input ||
+        (attributes.c_oflag & OPOST) != 0 ||
+        (attributes.c_lflag & (ECHO | ECHONL | ICANON | ISIG | IEXTEN)) != 0 ||
+        (attributes.c_cflag & (CREAD | CLOCAL)) != (CREAD | CLOCAL) || attributes.c_cc[VMIN] != 0 ||
+        attributes.c_cc[VTIME] != 0 || ::cfgetispeed(&attributes) != speed ||
+        ::cfgetospeed(&attributes) != speed)
         return false;
-    tcflag_t expected = PortAccess::data_bits(c) == DataBits::Five    ? CS5
-                        : PortAccess::data_bits(c) == DataBits::Six   ? CS6
-                        : PortAccess::data_bits(c) == DataBits::Seven ? CS7
-                                                                      : CS8;
-    if (PortAccess::parity(c) != Parity::None) expected |= PARENB;
-    if (PortAccess::parity(c) == Parity::Odd) expected |= PARODD;
-    if (PortAccess::stop_bits(c) == StopBits::Two) expected |= CSTOPB;
-    if ((t.c_cflag & (CSIZE | PARENB | PARODD | CSTOPB)) != expected) return false;
+    tcflag_t expected = config.data_bits == DataBits::Five    ? CS5
+                        : config.data_bits == DataBits::Six   ? CS6
+                        : config.data_bits == DataBits::Seven ? CS7
+                                                              : CS8;
+    if (config.parity != Parity::None) expected |= PARENB;
+    if (config.parity == Parity::Odd || config.parity == Parity::Mark) expected |= PARODD;
+#ifdef CMSPAR
+    if (config.parity == Parity::Mark || config.parity == Parity::Space) expected |= CMSPAR;
+#endif
+    if (config.stop_bits == StopBits::Two) expected |= CSTOPB;
+    if ((attributes.c_cflag & (CSIZE | PARENB | PARODD | CSTOPB
+#ifdef CMSPAR
+                               | CMSPAR
+#endif
+                               )) != expected)
+        return false;
 #ifdef CRTSCTS
-    if (((t.c_cflag & CRTSCTS) != 0) != (PortAccess::flow_control(c) == FlowControl::Hardware))
+    if (((attributes.c_cflag & CRTSCTS) != 0) != (config.flow_control == FlowControl::RtsCts))
         return false;
 #endif
     return true;
 }
-
-[[nodiscard]] serial_rs485 requested(const Rs485Config& c) noexcept {
-    serial_rs485 r{};
-    r.flags = SER_RS485_ENABLED;
-    if (PortAccess::rts_during_send(c) == RtsLevel::Asserted) r.flags |= SER_RS485_RTS_ON_SEND;
-    if (PortAccess::rts_after_send(c) == RtsLevel::Asserted) r.flags |= SER_RS485_RTS_AFTER_SEND;
-    r.delay_rts_before_send = static_cast<std::uint32_t>(PortAccess::delay_before_send(c).count());
-    r.delay_rts_after_send = static_cast<std::uint32_t>(PortAccess::delay_after_send(c).count());
-    return r;
+[[nodiscard]] serial_rs485 requested_rs485(const Config::RS485& config) noexcept {
+    serial_rs485 request{};
+    if (!config.enabled) return request;
+    request.flags = SER_RS485_ENABLED;
+    if (config.rts_on_send) request.flags |= SER_RS485_RTS_ON_SEND;
+    if (config.rts_after_send) request.flags |= SER_RS485_RTS_AFTER_SEND;
+#ifdef SER_RS485_RX_DURING_TX
+    if (config.receive_during_transmit) request.flags |= SER_RS485_RX_DURING_TX;
+#endif
+    request.delay_rts_before_send = static_cast<std::uint32_t>(config.delay_before_send.count());
+    request.delay_rts_after_send = static_cast<std::uint32_t>(config.delay_after_send.count());
+    return request;
 }
-[[nodiscard]] bool matches(const serial_rs485& actual, const Rs485Config& c) noexcept {
-    const auto wanted = requested(c);
-    const auto flags = SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND;
-    return (actual.flags & flags) == (wanted.flags & flags) &&
-           actual.delay_rts_before_send == wanted.delay_rts_before_send &&
-           actual.delay_rts_after_send == wanted.delay_rts_after_send;
+[[nodiscard]] bool rs485_matches(const serial_rs485& actual, const Config::RS485& config) noexcept {
+    const auto request = requested_rs485(config);
+    unsigned int flags = SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND;
+#ifdef SER_RS485_RX_DURING_TX
+    flags |= SER_RS485_RX_DURING_TX;
+#endif
+    return (actual.flags & flags) == (request.flags & flags) &&
+           actual.delay_rts_before_send == request.delay_rts_before_send &&
+           actual.delay_rts_after_send == request.delay_rts_after_send;
 }
 void rollback(
-    int fd, const termios& t, bool termios_changed, const serial_rs485& r,
+    int fd, const termios& original, const serial_rs485& original_rs485, bool termios_changed,
     bool rs485_changed) noexcept {
-    if (rs485_changed) static_cast<void>(tty_adapter::set_rs485(fd, r));
-    if (termios_changed) static_cast<void>(tty_adapter::set_termios(fd, TCSANOW, t));
+    if (rs485_changed) static_cast<void>(tty_adapter::set_rs485(fd, original_rs485));
+    if (termios_changed) static_cast<void>(tty_adapter::set_termios(fd, TCSANOW, original));
     static_cast<void>(tty_adapter::close_fd(fd));
 }
-
-struct Deadline {
-    bool infinite;
-    timespec absolute;
+struct Deadline final {
+    timespec absolute{};
 };
-[[nodiscard]] int compare(const timespec& a, const timespec& b) noexcept {
-    return a.tv_sec == b.tv_sec  ? (a.tv_nsec == b.tv_nsec  ? 0
-                                    : a.tv_nsec < b.tv_nsec ? -1
-                                                            : 1)
-           : a.tv_sec < b.tv_sec ? -1
-                                 : 1;
+[[nodiscard]] int compare_time(const timespec& left, const timespec& right) noexcept {
+    if (left.tv_sec != right.tv_sec) return left.tv_sec < right.tv_sec ? -1 : 1;
+    return left.tv_nsec == right.tv_nsec ? 0 : (left.tv_nsec < right.tv_nsec ? -1 : 1);
 }
-[[nodiscard]] std::error_code deadline_for(const Timeout& timeout, Deadline& out) noexcept {
-    out.infinite = PortAccess::is_infinite(timeout);
-    if (out.infinite) return {};
+[[nodiscard]] Error make_deadline(std::chrono::nanoseconds timeout, Deadline& deadline) noexcept {
+    if (timeout.count() < 0) return Error::InvalidArgument;
     timespec now{};
-    const auto result = tty_adapter::monotonic_now(now);
-    if (result.value < 0) return system(result.error);
-    const auto seconds = PortAccess::duration(timeout).count() / 1000000000LL;
-    const auto nanos = PortAccess::duration(timeout).count() % 1000000000LL;
-    if (seconds > std::numeric_limits<time_t>::max() - now.tv_sec) {
-        return generic(std::errc::value_too_large);
+    const auto clock = tty_adapter::monotonic_now(now);
+    if (clock.value < 0) return errno_error(clock.error);
+    const auto seconds = timeout.count() / kNanosecondsPerSecond;
+    const auto nanoseconds = timeout.count() % kNanosecondsPerSecond;
+    if (seconds > std::numeric_limits<time_t>::max() - now.tv_sec) return Error::InvalidArgument;
+    deadline.absolute = {
+        now.tv_sec + static_cast<time_t>(seconds), now.tv_nsec + static_cast<long>(nanoseconds)};
+    if (deadline.absolute.tv_nsec >= kNanosecondsPerSecond) {
+        ++deadline.absolute.tv_sec;
+        deadline.absolute.tv_nsec -= kNanosecondsPerSecond;
     }
-    out.absolute = {
-        now.tv_sec + static_cast<time_t>(seconds), now.tv_nsec + static_cast<long>(nanos)};
-    if (out.absolute.tv_nsec >= 1000000000L) {
-        if (out.absolute.tv_sec == std::numeric_limits<time_t>::max())
-            return generic(std::errc::value_too_large);
-        ++out.absolute.tv_sec;
-        out.absolute.tv_nsec -= 1000000000L;
-    }
-    return {};
+    return Error::Io;
 }
-[[nodiscard]] std::error_code wait_for(
-    int fd, short events, const Deadline& d, short& revents) noexcept {
+[[nodiscard]] Error wait_fd(int fd, short events, const Deadline* deadline) noexcept {
     for (;;) {
         timespec remaining{};
         const timespec* timeout = nullptr;
-        if (!d.infinite) {
+        if (deadline != nullptr) {
             timespec now{};
-            const auto current = tty_adapter::monotonic_now(now);
-            if (current.value < 0) return system(current.error);
-            if (compare(now, d.absolute) >= 0) return generic(std::errc::timed_out);
-            remaining = {d.absolute.tv_sec - now.tv_sec, d.absolute.tv_nsec - now.tv_nsec};
+            const auto clock = tty_adapter::monotonic_now(now);
+            if (clock.value < 0) return errno_error(clock.error);
+            if (compare_time(now, deadline->absolute) >= 0) return Error::TimedOut;
+            remaining = {
+                deadline->absolute.tv_sec - now.tv_sec, deadline->absolute.tv_nsec - now.tv_nsec};
             if (remaining.tv_nsec < 0) {
                 --remaining.tv_sec;
-                remaining.tv_nsec += 1000000000L;
+                remaining.tv_nsec += kNanosecondsPerSecond;
             }
             timeout = &remaining;
         }
-        const auto result = tty_adapter::wait(fd, events, timeout, revents);
-        if (result.value >= 0)
-            return result.value == 0 ? generic(std::errc::timed_out) : std::error_code{};
-        if (result.error != EINTR) return system(result.error);
+        short revents = 0;
+        const auto waited = tty_adapter::wait(fd, events, timeout, revents);
+        if (waited.value < 0) {
+            if (waited.error == EINTR) continue;
+            return errno_error(waited.error);
+        }
+        if (waited.value == 0) return Error::TimedOut;
+        if ((revents & POLLNVAL) != 0) return Error::NotOpen;
+        if ((revents & (POLLHUP | POLLERR)) != 0 && (revents & events) == 0)
+            return Error::Disconnected;
+        if ((revents & events) != 0) return Error::Io;
     }
 }
-[[nodiscard]] std::error_code unavailable(const Timeout& timeout) noexcept {
-    return PortAccess::is_immediate(timeout) ? generic(std::errc::resource_unavailable_try_again)
-                                             : generic(std::errc::timed_out);
+template <typename Pointer>
+[[nodiscard]] hardware::Result<std::size_t, Error> transfer(
+    int fd, Pointer data, std::size_t size, bool output, const Deadline* deadline,
+    bool immediate) noexcept {
+    if (fd < 0) return hardware::Result<std::size_t, Error>::failure(Error::NotOpen);
+    if (data == nullptr && size != 0)
+        return hardware::Result<std::size_t, Error>::failure(Error::InvalidArgument);
+    if (size == 0) return hardware::Result<std::size_t, Error>::success(0);
+    for (;;) {
+        if (!immediate) {
+            const auto ready = wait_fd(fd, output ? POLLOUT : POLLIN, deadline);
+            if (ready != Error::Io) return hardware::Result<std::size_t, Error>::failure(ready);
+        }
+        const auto result = [&]() noexcept {
+            if constexpr (std::is_const_v<std::remove_pointer_t<Pointer>>) {
+                return tty_adapter::write_bytes(fd, data, size);
+            } else {
+                return tty_adapter::read_bytes(fd, data, size);
+            }
+        }();
+        if (result.value > 0)
+            return hardware::Result<std::size_t, Error>::success(
+                static_cast<std::size_t>(result.value));
+        if (result.value == 0) {
+            // A raw TTY with VMIN=0 may report a zero-byte read after a
+            // readiness race. It is not EOF; bounded and blocking reads keep
+            // their existing deadline, while immediate reads report no progress.
+            if (!output) {
+                if (immediate)
+                    return hardware::Result<std::size_t, Error>::failure(Error::WouldBlock);
+                continue;
+            }
+            return hardware::Result<std::size_t, Error>::failure(Error::Disconnected);
+        }
+        if (result.error == EINTR) continue;
+        if (result.error == EAGAIN || result.error == EWOULDBLOCK) {
+            if (immediate) return hardware::Result<std::size_t, Error>::failure(Error::WouldBlock);
+            continue;
+        }
+        return hardware::Result<std::size_t, Error>::failure(errno_error(result.error));
+    }
 }
-
+[[nodiscard]] hardware::Result<bool, Error> modem_line(int fd, int line) noexcept {
+    if (fd < 0) return hardware::Result<bool, Error>::failure(Error::NotOpen);
+    int lines = 0;
+    const auto result = tty_adapter::get_modem_lines(fd, lines);
+    return result.value < 0 ? hardware::Result<bool, Error>::failure(errno_error(result.error))
+                            : hardware::Result<bool, Error>::success((lines & line) != 0);
+}
 }  // namespace
 
-Port::Port() noexcept : fd_(kClosedFd) {}
 Port::~Port() noexcept { static_cast<void>(close()); }
-Port::Port(Port&& other) noexcept : fd_(other.fd_) { other.fd_ = kClosedFd; }
+Port::Port(Port&& other) noexcept : fd_(other.fd_), rts_automatic_(other.rts_automatic_) {
+    other.fd_ = kClosedFd;
+    other.rts_automatic_ = false;
+}
 bool Port::is_open() const noexcept { return fd_ >= 0; }
-
-namespace {
-
-std::error_code open_legacy(int& fd_, const std::string& path, const PortConfig& config) noexcept {
-    if (fd_ >= 0) return generic(std::errc::device_or_resource_busy);
+hardware::Result<void, Error> Port::open(const std::string& path, const Config& config) noexcept {
+    if (fd_ >= 0) return hardware::Result<void, Error>::failure(Error::AlreadyOpen);
     if (path.empty() || path.find('\0') != std::string::npos)
-        return generic(std::errc::invalid_argument);
+        return hardware::Result<void, Error>::failure(Error::InvalidArgument);
     speed_t speed{};
-    if (const auto error = check_config(config, speed)) return error;
+    const auto validation = validate_config(config, speed);
+    if (validation != Error::Io) return hardware::Result<void, Error>::failure(validation);
     const auto opened =
         tty_adapter::open_path(path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
-    if (opened.value < 0) return system(opened.error);
-    const int fd = static_cast<int>(opened.value);
-    const auto tty = tty_adapter::is_tty(fd);
+    if (opened.value < 0) return hardware::Result<void, Error>::failure(errno_error(opened.error));
+    const int candidate = static_cast<int>(opened.value);
+    const auto tty = tty_adapter::is_tty(candidate);
     if (tty.value <= 0) {
-        static_cast<void>(tty_adapter::close_fd(fd));
-        return tty.value == 0 ? generic(std::errc::inappropriate_io_control_operation)
-                              : system(tty.error);
+        static_cast<void>(tty_adapter::close_fd(candidate));
+        return hardware::Result<void, Error>::failure(
+            tty.value == 0 ? Error::NotTerminal : errno_error(tty.error));
     }
     termios original{};
-    const auto got = tty_adapter::get_termios(fd, original);
+    const auto got = tty_adapter::get_termios(candidate, original);
     if (got.value < 0) {
-        static_cast<void>(tty_adapter::close_fd(fd));
-        return system(got.error);
+        static_cast<void>(tty_adapter::close_fd(candidate));
+        return hardware::Result<void, Error>::failure(errno_error(got.error));
     }
-    serial_rs485 original_rs{};
-    if (PortAccess::enabled(PortAccess::rs485(config))) {
-        const auto rs = tty_adapter::get_rs485(fd, original_rs);
-        if (rs.value < 0) {
-            static_cast<void>(tty_adapter::close_fd(fd));
-            return unsupported(rs.error) ? generic(std::errc::operation_not_supported)
-                                         : system(rs.error);
-        }
+    serial_rs485 original_rs485{};
+    const auto got_rs485 = tty_adapter::get_rs485(candidate, original_rs485);
+    const bool rs485_supported = got_rs485.value >= 0;
+    if (!rs485_supported && config.rs485.enabled) {
+        static_cast<void>(tty_adapter::close_fd(candidate));
+        return hardware::Result<void, Error>::failure(
+            unsupported_errno(got_rs485.error) ? Error::Unsupported : errno_error(got_rs485.error));
     }
-    termios candidate = original;
-    if (!set_config(candidate, config, speed)) {
-        static_cast<void>(tty_adapter::close_fd(fd));
-        return generic(std::errc::invalid_argument);
+    termios requested = original;
+    if (!apply_configuration(requested, config, speed)) {
+        static_cast<void>(tty_adapter::close_fd(candidate));
+        return hardware::Result<void, Error>::failure(Error::InvalidArgument);
     }
-    const auto set = tty_adapter::set_termios(fd, TCSANOW, candidate);
+    const auto set = tty_adapter::set_termios(candidate, TCSANOW, requested);
     if (set.value < 0) {
-        rollback(fd, original, true, original_rs, false);
-        return system(set.error);
+        rollback(candidate, original, original_rs485, false, false);
+        return hardware::Result<void, Error>::failure(errno_error(set.error));
     }
-    bool rs_changed = false;
-    if (PortAccess::enabled(PortAccess::rs485(config))) {
-        const auto rs = tty_adapter::set_rs485(fd, requested(PortAccess::rs485(config)));
-        if (rs.value < 0) {
-            rollback(fd, original, true, original_rs, false);
-            return unsupported(rs.error) ? generic(std::errc::operation_not_supported)
-                                         : system(rs.error);
+    bool rs485_changed = false;
+    if (rs485_supported) {
+        const auto set_rs485 = tty_adapter::set_rs485(candidate, requested_rs485(config.rs485));
+        if (set_rs485.value < 0) {
+            rollback(candidate, original, original_rs485, true, false);
+            return hardware::Result<void, Error>::failure(
+                unsupported_errno(set_rs485.error) ? Error::Unsupported
+                                                   : errno_error(set_rs485.error));
         }
-        rs_changed = true;
+        rs485_changed = true;
     }
-    termios actual{};
-    const auto readback = tty_adapter::get_termios(fd, actual);
-    if (readback.value < 0) {
-        rollback(fd, original, true, original_rs, rs_changed);
-        return system(readback.error);
+    termios effective{};
+    const auto readback = tty_adapter::get_termios(candidate, effective);
+    if (readback.value < 0 || !termios_matches(effective, config, speed)) {
+        rollback(candidate, original, original_rs485, true, rs485_changed);
+        return hardware::Result<void, Error>::failure(
+            readback.value < 0 ? errno_error(readback.error) : Error::Unsupported);
     }
-    if (!matches(actual, config, speed)) {
-        rollback(fd, original, true, original_rs, rs_changed);
-        return generic(std::errc::io_error);
-    }
-    if (PortAccess::enabled(PortAccess::rs485(config))) {
-        serial_rs485 actual_rs{};
-        const auto rs = tty_adapter::get_rs485(fd, actual_rs);
-        if (rs.value < 0) {
-            rollback(fd, original, true, original_rs, rs_changed);
-            return unsupported(rs.error) ? generic(std::errc::operation_not_supported)
-                                         : system(rs.error);
-        }
-        if (!matches(actual_rs, PortAccess::rs485(config))) {
-            rollback(fd, original, true, original_rs, rs_changed);
-            return generic(std::errc::io_error);
+    if (rs485_supported) {
+        serial_rs485 effective_rs485{};
+        const auto rs_readback = tty_adapter::get_rs485(candidate, effective_rs485);
+        if (rs_readback.value < 0 || !rs485_matches(effective_rs485, config.rs485)) {
+            rollback(candidate, original, original_rs485, true, rs485_changed);
+            return hardware::Result<void, Error>::failure(
+                rs_readback.value < 0 ? errno_error(rs_readback.error) : Error::Unsupported);
         }
     }
-    fd_ = fd;
-    return {};
-}
-
-std::error_code close_legacy(int& fd_) noexcept {
-    const int fd = fd_;
-    if (fd < 0) return {};
-    fd_ = kClosedFd;
-    const auto result = tty_adapter::close_fd(fd);
-    return result.value < 0 ? system(result.error) : std::error_code{};
-}
-
-TransferLegacy read_legacy(
-    int fd_, std::byte* data, std::size_t capacity, Timeout timeout) noexcept {
-    if (fd_ < 0) return {0, generic(std::errc::bad_file_descriptor)};
-    if (data == nullptr && capacity > 0) return {0, generic(std::errc::invalid_argument)};
-    if (!timeout.is_valid()) return {0, generic(std::errc::invalid_argument)};
-    if (capacity == 0) return {0, {}};
-    Deadline deadline{};
-    if (!PortAccess::is_immediate(timeout)) {
-        if (const auto error = deadline_for(timeout, deadline)) return {0, error};
-    }
-    for (;;) {
-        short revents = 0;
-        if (!PortAccess::is_immediate(timeout)) {
-            if (const auto error = wait_for(fd_, POLLIN, deadline, revents)) return {0, error};
-            if (revents & POLLNVAL) return {0, system(EBADF)};
-            if (!(revents & POLLIN) && (revents & POLLHUP))
-                return {0, generic(std::errc::connection_reset)};
-        }
-        const auto result = tty_adapter::read_bytes(fd_, data, capacity);
-        if (result.value > 0) return {static_cast<std::size_t>(result.value), {}};
-        if (result.value == 0) return {0, generic(std::errc::connection_reset)};
-        if (result.error == EINTR && !PortAccess::is_immediate(timeout)) continue;
-        if (result.error == EAGAIN || result.error == EWOULDBLOCK) {
-            if (PortAccess::is_immediate(timeout)) return {0, unavailable(timeout)};
-            continue;
-        }
-        return {0, system(result.error)};
-    }
-}
-
-TransferLegacy write_legacy(
-    int fd_, const std::byte* data, std::size_t size, Timeout timeout) noexcept {
-    if (fd_ < 0) return {0, generic(std::errc::bad_file_descriptor)};
-    if (data == nullptr && size > 0) return {0, generic(std::errc::invalid_argument)};
-    if (!timeout.is_valid()) return {0, generic(std::errc::invalid_argument)};
-    if (size == 0) return {0, {}};
-    Deadline deadline{};
-    if (!PortAccess::is_immediate(timeout)) {
-        if (const auto error = deadline_for(timeout, deadline)) return {0, error};
-    }
-    std::size_t done = 0;
-    for (;;) {
-        short revents = 0;
-        if (!PortAccess::is_immediate(timeout)) {
-            if (const auto error = wait_for(fd_, POLLOUT, deadline, revents)) return {done, error};
-            if (revents & POLLNVAL) return {done, system(EBADF)};
-            if (!(revents & POLLOUT) && (revents & POLLHUP))
-                return {done, generic(std::errc::connection_reset)};
-        }
-        const auto result = tty_adapter::write_bytes(fd_, data + done, size - done);
-        if (result.value > 0) {
-            done += static_cast<std::size_t>(result.value);
-            return {done, {}};
-        }
-        if (result.value == 0) return {done, generic(std::errc::connection_reset)};
-        if (result.error == EINTR && !PortAccess::is_immediate(timeout)) continue;
-        if (result.error == EAGAIN || result.error == EWOULDBLOCK) {
-            if (PortAccess::is_immediate(timeout)) {
-                return {done, unavailable(timeout)};
-            }
-            continue;
-        }
-        return {done, system(result.error)};
-    }
-}
-
-std::error_code flush_legacy(int fd_, FlushDirection direction) noexcept {
-    if (fd_ < 0) return generic(std::errc::bad_file_descriptor);
-    if (!valid(direction)) return generic(std::errc::invalid_argument);
-    const int selector = direction == FlushDirection::Input    ? TCIFLUSH
-                         : direction == FlushDirection::Output ? TCOFLUSH
-                                                               : TCIOFLUSH;
-    const auto result = tty_adapter::flush(fd_, selector);
-    return result.value < 0 ? system(result.error) : std::error_code{};
-}
-
-std::error_code drain_legacy(int fd_, Timeout timeout) noexcept {
-    if (fd_ < 0) return generic(std::errc::bad_file_descriptor);
-    if (!timeout.is_valid()) return generic(std::errc::invalid_argument);
-    if (PortAccess::is_finite(timeout)) {
-        return generic(std::errc::operation_not_supported);
-    }
-    if (PortAccess::is_immediate(timeout)) {
-        int queued = 0;
-        const auto result = tty_adapter::output_queue_size(fd_, queued);
-        if (result.value < 0)
-            return unsupported(result.error) ? generic(std::errc::operation_not_supported)
-                                             : system(result.error);
-        return queued == 0 ? std::error_code{} : generic(std::errc::resource_unavailable_try_again);
-    }
-    for (;;) {
-        const auto result = tty_adapter::drain(fd_);
-        if (result.value >= 0) return {};
-        if (result.error != EINTR) return system(result.error);
-    }
-}
-
-}  // namespace
-
-namespace {
-[[nodiscard]] Error map_error(const std::error_code& error) noexcept {
-    if (!error) return Error::Io;
-    if (error == std::errc::invalid_argument || error == std::errc::value_too_large)
-        return Error::InvalidArgument;
-    if (error == std::errc::device_or_resource_busy) return Error::Busy;
-    if (error == std::errc::bad_file_descriptor) return Error::NotOpen;
-    if (error == std::errc::timed_out || error == std::errc::resource_unavailable_try_again)
-        return Error::TimedOut;
-    if (error == std::errc::operation_not_supported ||
-        error == std::errc::inappropriate_io_control_operation)
-        return Error::Unsupported;
-    if (error == std::errc::permission_denied) return Error::PermissionDenied;
-    if (error == std::errc::no_such_file_or_directory || error == std::errc::no_such_device)
-        return Error::DeviceNotFound;
-    if (error == std::errc::connection_reset) return Error::Disconnected;
-    return Error::Io;
-}
-}  // namespace
-
-hardware::Result<void, Error> Port::open(
-    const std::string& path, const PortConfig& config) noexcept {
-    const auto error = open_legacy(fd_, path, config);
-    return error ? hardware::Result<void, Error>::failure(map_error(error))
-                 : hardware::Result<void, Error>::success();
+    fd_ = candidate;
+    rts_automatic_ = config.rs485.enabled || config.flow_control == FlowControl::RtsCts;
+    return hardware::Result<void, Error>::success();
 }
 hardware::Result<void, Error> Port::close() noexcept {
-    const auto error = close_legacy(fd_);
-    return error ? hardware::Result<void, Error>::failure(map_error(error))
-                 : hardware::Result<void, Error>::success();
+    if (fd_ < 0) return hardware::Result<void, Error>::success();
+    const int closing = fd_;
+    fd_ = kClosedFd;
+    rts_automatic_ = false;
+    const auto result = tty_adapter::close_fd(closing);
+    return result.value < 0 ? hardware::Result<void, Error>::failure(errno_error(result.error))
+                            : hardware::Result<void, Error>::success();
+}
+hardware::Result<std::size_t, Error> Port::read(std::byte* data, std::size_t size) noexcept {
+    return transfer(fd_, data, size, false, nullptr, false);
 }
 hardware::Result<std::size_t, Error> Port::read(
-    std::byte* data, std::size_t size, Timeout timeout) noexcept {
-    auto result = read_legacy(fd_, data, size, timeout);
-    return result.error ? hardware::Result<std::size_t, Error>::failure(map_error(result.error))
-                        : hardware::Result<std::size_t, Error>::success(result.bytes_transferred);
+    std::byte* data, std::size_t size, std::chrono::nanoseconds timeout) noexcept {
+    Deadline deadline{};
+    const auto error = make_deadline(timeout, deadline);
+    return error != Error::Io ? hardware::Result<std::size_t, Error>::failure(error)
+                              : transfer(fd_, data, size, false, &deadline, false);
+}
+hardware::Result<std::size_t, Error> Port::try_read(std::byte* data, std::size_t size) noexcept {
+    return transfer(fd_, data, size, false, nullptr, true);
+}
+hardware::Result<std::size_t, Error> Port::write(const std::byte* data, std::size_t size) noexcept {
+    return transfer(fd_, data, size, true, nullptr, false);
 }
 hardware::Result<std::size_t, Error> Port::write(
-    const std::byte* data, std::size_t size, Timeout timeout) noexcept {
-    auto result = write_legacy(fd_, data, size, timeout);
-    return result.error ? hardware::Result<std::size_t, Error>::failure(map_error(result.error))
-                        : hardware::Result<std::size_t, Error>::success(result.bytes_transferred);
+    const std::byte* data, std::size_t size, std::chrono::nanoseconds timeout) noexcept {
+    Deadline deadline{};
+    const auto error = make_deadline(timeout, deadline);
+    return error != Error::Io ? hardware::Result<std::size_t, Error>::failure(error)
+                              : transfer(fd_, data, size, true, &deadline, false);
 }
-hardware::Result<void, Error> Port::flush(FlushDirection direction) noexcept {
-    const auto error = flush_legacy(fd_, direction);
-    return error ? hardware::Result<void, Error>::failure(map_error(error))
-                 : hardware::Result<void, Error>::success();
+hardware::Result<std::size_t, Error> Port::try_write(
+    const std::byte* data, std::size_t size) noexcept {
+    return transfer(fd_, data, size, true, nullptr, true);
 }
-hardware::Result<void, Error> Port::drain(Timeout timeout) noexcept {
-    const auto error = drain_legacy(fd_, timeout);
-    return error ? hardware::Result<void, Error>::failure(map_error(error))
-                 : hardware::Result<void, Error>::success();
+hardware::Result<void, Error> Port::wait_readable(std::chrono::nanoseconds timeout) noexcept {
+    if (fd_ < 0) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    Deadline deadline{};
+    const auto error = make_deadline(timeout, deadline);
+    if (error != Error::Io) return hardware::Result<void, Error>::failure(error);
+    const auto waited = wait_fd(fd_, POLLIN, &deadline);
+    return waited == Error::Io ? hardware::Result<void, Error>::success()
+                               : hardware::Result<void, Error>::failure(waited);
 }
-
+hardware::Result<void, Error> Port::wait_writable(std::chrono::nanoseconds timeout) noexcept {
+    if (fd_ < 0) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    Deadline deadline{};
+    const auto error = make_deadline(timeout, deadline);
+    if (error != Error::Io) return hardware::Result<void, Error>::failure(error);
+    const auto waited = wait_fd(fd_, POLLOUT, &deadline);
+    return waited == Error::Io ? hardware::Result<void, Error>::success()
+                               : hardware::Result<void, Error>::failure(waited);
+}
+hardware::Result<std::size_t, Error> Port::bytes_available() const noexcept {
+    if (fd_ < 0) return hardware::Result<std::size_t, Error>::failure(Error::NotOpen);
+    int value = 0;
+    const auto result = tty_adapter::input_queue_size(fd_, value);
+    return result.value < 0 || value < 0
+               ? hardware::Result<std::size_t, Error>::failure(errno_error(result.error))
+               : hardware::Result<std::size_t, Error>::success(static_cast<std::size_t>(value));
+}
+hardware::Result<std::size_t, Error> Port::bytes_pending() const noexcept {
+    if (fd_ < 0) return hardware::Result<std::size_t, Error>::failure(Error::NotOpen);
+    int value = 0;
+    const auto result = tty_adapter::output_queue_size(fd_, value);
+    return result.value < 0 || value < 0
+               ? hardware::Result<std::size_t, Error>::failure(errno_error(result.error))
+               : hardware::Result<std::size_t, Error>::success(static_cast<std::size_t>(value));
+}
+hardware::Result<void, Error> Port::discard_input() noexcept {
+    if (fd_ < 0) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    const auto result = tty_adapter::flush(fd_, TCIFLUSH);
+    return result.value < 0 ? hardware::Result<void, Error>::failure(errno_error(result.error))
+                            : hardware::Result<void, Error>::success();
+}
+hardware::Result<void, Error> Port::discard_output() noexcept {
+    if (fd_ < 0) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    const auto result = tty_adapter::flush(fd_, TCOFLUSH);
+    return result.value < 0 ? hardware::Result<void, Error>::failure(errno_error(result.error))
+                            : hardware::Result<void, Error>::success();
+}
+hardware::Result<void, Error> Port::discard_buffers() noexcept {
+    if (fd_ < 0) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    const auto result = tty_adapter::flush(fd_, TCIOFLUSH);
+    return result.value < 0 ? hardware::Result<void, Error>::failure(errno_error(result.error))
+                            : hardware::Result<void, Error>::success();
+}
+hardware::Result<void, Error> Port::drain() noexcept {
+    if (fd_ < 0) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    for (;;) {
+        const auto result = tty_adapter::drain(fd_);
+        if (result.value >= 0) return hardware::Result<void, Error>::success();
+        if (result.error != EINTR)
+            return hardware::Result<void, Error>::failure(errno_error(result.error));
+    }
+}
+hardware::Result<void, Error> Port::set_rts(bool asserted) noexcept {
+    if (fd_ < 0) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    if (rts_automatic_) return hardware::Result<void, Error>::failure(Error::InvalidState);
+    const auto result = tty_adapter::set_modem_lines(fd_, TIOCM_RTS, asserted);
+    return result.value < 0 ? hardware::Result<void, Error>::failure(errno_error(result.error))
+                            : hardware::Result<void, Error>::success();
+}
+hardware::Result<bool, Error> Port::rts() const noexcept { return modem_line(fd_, TIOCM_RTS); }
+hardware::Result<void, Error> Port::set_dtr(bool asserted) noexcept {
+    if (fd_ < 0) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    const auto result = tty_adapter::set_modem_lines(fd_, TIOCM_DTR, asserted);
+    return result.value < 0 ? hardware::Result<void, Error>::failure(errno_error(result.error))
+                            : hardware::Result<void, Error>::success();
+}
+hardware::Result<bool, Error> Port::dtr() const noexcept { return modem_line(fd_, TIOCM_DTR); }
+hardware::Result<bool, Error> Port::cts() const noexcept { return modem_line(fd_, TIOCM_CTS); }
+hardware::Result<bool, Error> Port::dsr() const noexcept { return modem_line(fd_, TIOCM_DSR); }
+hardware::Result<bool, Error> Port::ri() const noexcept { return modem_line(fd_, TIOCM_RI); }
+hardware::Result<bool, Error> Port::dcd() const noexcept { return modem_line(fd_, TIOCM_CAR); }
+hardware::Result<void, Error> Port::set_break(bool asserted) noexcept {
+    if (fd_ < 0) return hardware::Result<void, Error>::failure(Error::NotOpen);
+    const auto result = tty_adapter::set_break(fd_, asserted);
+    return result.value < 0 ? hardware::Result<void, Error>::failure(errno_error(result.error))
+                            : hardware::Result<void, Error>::success();
+}
 }  // namespace serial

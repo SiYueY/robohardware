@@ -10,7 +10,6 @@ namespace serial::tty_adapter {
 namespace {
 [[nodiscard]] Result captured(long value) noexcept { return {value, value < 0 ? errno : 0}; }
 }  // namespace
-
 Result open_path(const char* path, int flags) noexcept { return captured(::open(path, flags)); }
 Result close_fd(int fd) noexcept { return captured(::close(fd)); }
 Result is_tty(int fd) noexcept { return captured(::isatty(fd)); }
@@ -24,8 +23,8 @@ Result get_rs485(int fd, serial_rs485& configuration) noexcept {
     return captured(::ioctl(fd, TIOCGRS485, &configuration));
 }
 Result set_rs485(int fd, const serial_rs485& configuration) noexcept {
-    auto mutable_configuration = configuration;
-    return captured(::ioctl(fd, TIOCSRS485, &mutable_configuration));
+    auto requested = configuration;
+    return captured(::ioctl(fd, TIOCSRS485, &requested));
 }
 Result monotonic_now(timespec& value) noexcept {
     return captured(::clock_gettime(CLOCK_MONOTONIC, &value));
@@ -45,9 +44,20 @@ Result write_bytes(int fd, const void* data, std::size_t size) noexcept {
     return captured(::write(fd, data, size));
 }
 Result flush(int fd, int selector) noexcept { return captured(::tcflush(fd, selector)); }
+Result input_queue_size(int fd, int& size) noexcept {
+    return captured(::ioctl(fd, FIONREAD, &size));
+}
 Result output_queue_size(int fd, int& size) noexcept {
     return captured(::ioctl(fd, TIOCOUTQ, &size));
 }
 Result drain(int fd) noexcept { return captured(::tcdrain(fd)); }
-
+Result get_modem_lines(int fd, int& lines) noexcept {
+    return captured(::ioctl(fd, TIOCMGET, &lines));
+}
+Result set_modem_lines(int fd, int bits, bool asserted) noexcept {
+    return captured(::ioctl(fd, asserted ? TIOCMBIS : TIOCMBIC, &bits));
+}
+Result set_break(int fd, bool asserted) noexcept {
+    return captured(::ioctl(fd, asserted ? TIOCSBRK : TIOCCBRK));
+}
 }  // namespace serial::tty_adapter

@@ -39,9 +39,9 @@ target_link_libraries(realtime PUBLIC Threads::Threads)
 hardware_module(realtime realtimeTargets realtime)
 
 add_library(serial SHARED
-  src/serial/configuration.cpp src/serial/port.cpp
-  src/serial/timeout.cpp src/serial/tty_adapter_linux.cpp)
+  src/serial/port.cpp src/serial/tool.cpp src/serial/tty_adapter_linux.cpp)
 hardware_module(serial serialTargets serial)
+target_compile_options(serial PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
 
 add_library(spi SHARED src/spi/device.cpp src/spi/spidev.cpp)
 hardware_module(spi spiTargets spi)
@@ -65,6 +65,9 @@ if(BUILD_TESTING)
     target_link_libraries(${module}_result_behavior_test PRIVATE ${module}::${module})
     add_test(NAME ${module}.result_behavior COMMAND ${module}_result_behavior_test)
   endforeach()
+  add_executable(serial_pty_integration_test tests/serial/pty_integration_test.cpp)
+  target_link_libraries(serial_pty_integration_test PRIVATE serial::serial)
+  add_test(NAME serial.pty_integration COMMAND serial_pty_integration_test)
   add_executable(spi_device_behavior_test
     src/spi/device.cpp
     tests/spi/device_behavior_test.cpp

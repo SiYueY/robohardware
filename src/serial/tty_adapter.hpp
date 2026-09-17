@@ -7,12 +7,10 @@
 #include <linux/serial.h>
 
 namespace serial::tty_adapter {
-
 struct Result final {
     long value;
     int error;
 };
-
 [[nodiscard]] Result open_path(const char* path, int flags) noexcept;
 [[nodiscard]] Result close_fd(int fd) noexcept;
 [[nodiscard]] Result is_tty(int fd) noexcept;
@@ -25,7 +23,10 @@ struct Result final {
 [[nodiscard]] Result read_bytes(int fd, void* data, std::size_t size) noexcept;
 [[nodiscard]] Result write_bytes(int fd, const void* data, std::size_t size) noexcept;
 [[nodiscard]] Result flush(int fd, int selector) noexcept;
+[[nodiscard]] Result input_queue_size(int fd, int& size) noexcept;
 [[nodiscard]] Result output_queue_size(int fd, int& size) noexcept;
 [[nodiscard]] Result drain(int fd) noexcept;
-
+[[nodiscard]] Result get_modem_lines(int fd, int& lines) noexcept;
+[[nodiscard]] Result set_modem_lines(int fd, int bits, bool asserted) noexcept;
+[[nodiscard]] Result set_break(int fd, bool asserted) noexcept;
 }  // namespace serial::tty_adapter
