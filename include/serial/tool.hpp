@@ -24,7 +24,9 @@ struct PortInfo final {
     USB usb{};
 };
 
-// Enumerates Linux TTY devices. Missing optional metadata does not remove a port.
+// Enumerates Linux TTY devices. No ports is a successful empty result. Missing
+// per-device metadata is non-fatal. This discovery operation may allocate and
+// access sysfs and is not real-time safe.
 [[nodiscard]] hardware::Result<std::vector<PortInfo>, Error> list_ports() noexcept;
 
 }  // namespace serial

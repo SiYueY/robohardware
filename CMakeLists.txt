@@ -39,7 +39,7 @@ target_link_libraries(realtime PUBLIC Threads::Threads)
 hardware_module(realtime realtimeTargets realtime)
 
 add_library(serial SHARED
-  src/serial/port.cpp src/serial/tool.cpp src/serial/tty_adapter_linux.cpp)
+  src/serial/port.cpp src/serial/tool.cpp src/serial/tty.cpp)
 hardware_module(serial serialTargets serial)
 target_compile_options(serial PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
 
@@ -65,6 +65,19 @@ if(BUILD_TESTING)
     target_link_libraries(${module}_result_behavior_test PRIVATE ${module}::${module})
     add_test(NAME ${module}.result_behavior COMMAND ${module}_result_behavior_test)
   endforeach()
+  add_executable(serial_port_behavior_test
+    src/serial/port.cpp
+    tests/serial/port_behavior_test.cpp
+    tests/serial/tty_fake.cpp)
+  target_compile_features(serial_port_behavior_test PRIVATE cxx_std_17)
+  target_compile_definitions(serial_port_behavior_test PRIVATE _GNU_SOURCE)
+  target_compile_options(serial_port_behavior_test PRIVATE
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+  target_include_directories(serial_port_behavior_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/serial
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/serial)
+  add_test(NAME serial.port_behavior COMMAND serial_port_behavior_test)
   add_executable(serial_pty_integration_test tests/serial/pty_integration_test.cpp)
   target_link_libraries(serial_pty_integration_test PRIVATE serial::serial)
   add_test(NAME serial.pty_integration COMMAND serial_pty_integration_test)

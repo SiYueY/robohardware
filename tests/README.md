@@ -1,7 +1,8 @@
 # Test status
 
-The root `CMakeLists.txt` is the only active test manifest. Its tests exercise the installed
-public Result/Error interfaces and are the V1 validation surface.
+The root `CMakeLists.txt` is the active test manifest.
 
-The pre-rebaseline test fixtures targeted removed error and transfer interfaces. They were
-deleted during the V1 rebaseline rather than being presented as current verification.
+Serial uses two complementary test layers: deterministic behavior tests compile `port.cpp` against
+`tests/serial/tty_fake.cpp` to inject syscall errors and state changes, while the PTY integration
+test exercises the production Linux TTY wrapper. This mirrors the SPI `spidev`/`spidev_fake`
+structure and keeps test seams private to the implementation.
