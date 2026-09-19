@@ -1,6 +1,7 @@
 #include <serial/port.hpp>
 #include <serial/tool.hpp>
 #include <type_traits>
+#include <utility>
 static_assert(std::is_same_v<
               decltype(std::declval<serial::Port&>().read(nullptr, 0)),
               hardware::Result<std::size_t, serial::Error>>);

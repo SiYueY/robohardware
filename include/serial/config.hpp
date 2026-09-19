@@ -21,7 +21,7 @@ struct Config final {
     };
 
     // Unit: baud.
-    std::uint32_t baud_rate;
+    std::uint32_t baud_rate{0};
     DataBits data_bits{DataBits::Eight};
     Parity parity{Parity::None};
     StopBits stop_bits{StopBits::One};

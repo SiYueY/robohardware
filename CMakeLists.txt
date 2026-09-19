@@ -50,19 +50,26 @@ add_library(can SHARED src/can/can.cpp)
 hardware_module(can canTargets can)
 
 if(BUILD_TESTING)
+  function(enable_test_assertions target)
+    target_compile_options(${target} PRIVATE -UNDEBUG)
+  endfunction()
+
   add_executable(hardware_result_test tests/hardware/result_test.cpp)
   target_compile_features(hardware_result_test PRIVATE cxx_std_17)
   target_include_directories(hardware_result_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  enable_test_assertions(hardware_result_test)
   add_test(NAME hardware.result COMMAND hardware_result_test)
   foreach(module IN ITEMS realtime serial spi can)
     add_executable(${module}_api_test tests/${module}/api_test.cpp)
     target_compile_features(${module}_api_test PRIVATE cxx_std_17)
     target_link_libraries(${module}_api_test PRIVATE ${module}::${module})
+    enable_test_assertions(${module}_api_test)
     add_test(NAME ${module}.api COMMAND ${module}_api_test)
   endforeach()
   foreach(module IN ITEMS realtime serial spi)
     add_executable(${module}_result_behavior_test tests/${module}/result_behavior_test.cpp)
     target_link_libraries(${module}_result_behavior_test PRIVATE ${module}::${module})
+    enable_test_assertions(${module}_result_behavior_test)
     add_test(NAME ${module}.result_behavior COMMAND ${module}_result_behavior_test)
   endforeach()
   add_executable(serial_port_behavior_test
@@ -73,6 +80,7 @@ if(BUILD_TESTING)
   target_compile_definitions(serial_port_behavior_test PRIVATE _GNU_SOURCE)
   target_compile_options(serial_port_behavior_test PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+  enable_test_assertions(serial_port_behavior_test)
   target_include_directories(serial_port_behavior_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/serial
@@ -80,6 +88,7 @@ if(BUILD_TESTING)
   add_test(NAME serial.port_behavior COMMAND serial_port_behavior_test)
   add_executable(serial_pty_integration_test tests/serial/pty_integration_test.cpp)
   target_link_libraries(serial_pty_integration_test PRIVATE serial::serial)
+  enable_test_assertions(serial_pty_integration_test)
   add_test(NAME serial.pty_integration COMMAND serial_pty_integration_test)
   add_executable(spi_device_behavior_test
     src/spi/device.cpp
@@ -90,6 +99,7 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/spi
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/spi)
+  enable_test_assertions(spi_device_behavior_test)
   add_test(NAME spi.device_behavior COMMAND spi_device_behavior_test)
 endif()
 

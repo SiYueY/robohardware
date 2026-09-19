@@ -8,6 +8,7 @@
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <utility>
 
 namespace serial {
 namespace {
@@ -233,57 +234,28 @@ void apply_raw_mode(termios& attributes) noexcept {
 }
 
 [[nodiscard]] bool attributes_match(
-    const termios& attributes, const Config& config, speed_t speed) noexcept {
-    const tcflag_t expected_input = config.flow_control == FlowControl::XonXoff ? IXON | IXOFF : 0;
-    const tcflag_t raw_input =
-        IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | INPCK | IGNPAR | IXANY;
-
-    if ((attributes.c_iflag & (raw_input | IXON | IXOFF)) != expected_input ||
-        (attributes.c_oflag & OPOST) != 0 ||
-        (attributes.c_lflag & (ECHO | ECHONL | ICANON | ISIG | IEXTEN)) != 0 ||
-        (attributes.c_cflag & (CREAD | CLOCAL)) != (CREAD | CLOCAL) ||
-        attributes.c_cc[VMIN] != 0 || attributes.c_cc[VTIME] != 0 ||
-        ::cfgetispeed(&attributes) != speed || ::cfgetospeed(&attributes) != speed) {
-        return false;
-    }
-
-    tcflag_t expected_control = 0;
-    switch (config.data_bits) {
-        case DataBits::Five:
-            expected_control |= CS5;
-            break;
-        case DataBits::Six:
-            expected_control |= CS6;
-            break;
-        case DataBits::Seven:
-            expected_control |= CS7;
-            break;
-        case DataBits::Eight:
-            expected_control |= CS8;
-            break;
-    }
-    if (config.parity != Parity::None) expected_control |= PARENB;
-    if (config.parity == Parity::Odd || config.parity == Parity::Mark) {
-        expected_control |= PARODD;
-    }
-#ifdef CMSPAR
-    if (config.parity == Parity::Mark || config.parity == Parity::Space) {
-        expected_control |= CMSPAR;
-    }
-#endif
-    if (config.stop_bits == StopBits::Two) expected_control |= CSTOPB;
-
-    tcflag_t control_mask = CSIZE | PARENB | PARODD | CSTOPB;
+    const termios& actual, const termios& requested) noexcept {
+    constexpr tcflag_t input_mask =
+        IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | INPCK | IGNPAR | IXON |
+        IXOFF | IXANY;
+    constexpr tcflag_t output_mask = OPOST;
+    constexpr tcflag_t local_mask = ECHO | ECHONL | ICANON | ISIG | IEXTEN;
+    tcflag_t control_mask = CSIZE | PARENB | PARODD | CSTOPB | CREAD | CLOCAL;
 #ifdef CMSPAR
     control_mask |= CMSPAR;
 #endif
-    if ((attributes.c_cflag & control_mask) != expected_control) return false;
-
 #ifdef CRTSCTS
-    const bool rts_cts_enabled = (attributes.c_cflag & CRTSCTS) != 0;
-    if (rts_cts_enabled != (config.flow_control == FlowControl::RtsCts)) return false;
+    control_mask |= CRTSCTS;
 #endif
-    return true;
+
+    return (actual.c_iflag & input_mask) == (requested.c_iflag & input_mask) &&
+           (actual.c_oflag & output_mask) == (requested.c_oflag & output_mask) &&
+           (actual.c_lflag & local_mask) == (requested.c_lflag & local_mask) &&
+           (actual.c_cflag & control_mask) == (requested.c_cflag & control_mask) &&
+           actual.c_cc[VMIN] == requested.c_cc[VMIN] &&
+           actual.c_cc[VTIME] == requested.c_cc[VTIME] &&
+           ::cfgetispeed(&actual) == ::cfgetispeed(&requested) &&
+           ::cfgetospeed(&actual) == ::cfgetospeed(&requested);
 }
 
 [[nodiscard]] serial_rs485 make_rs485_request(const Config::RS485& config) noexcept {
@@ -315,24 +287,22 @@ void apply_raw_mode(termios& attributes) noexcept {
            actual.delay_rts_after_send == requested.delay_rts_after_send;
 }
 
-void release_open_candidate(int fd, bool exclusive) noexcept {
-    if (exclusive) static_cast<void>(tty::clear_exclusive(fd));
+void release_open_candidate(int fd) noexcept {
+    static_cast<void>(tty::clear_exclusive(fd));
     static_cast<void>(tty::close(fd));
 }
 
 void rollback_open(
     int fd, const termios& original_attributes, const serial_rs485& original_rs485,
-    bool attributes_attempted, bool rs485_attempted, bool exclusive) noexcept {
+    bool rs485_attempted) noexcept {
     if (rs485_attempted) static_cast<void>(tty::write_rs485(fd, original_rs485));
-    if (attributes_attempted) {
-        static_cast<void>(tty::write_attributes(fd, TCSANOW, original_attributes));
-    }
-    release_open_candidate(fd, exclusive);
+    static_cast<void>(tty::write_attributes(fd, TCSANOW, original_attributes));
+    release_open_candidate(fd);
 }
 
 struct Deadline final {
     timespec absolute{};
-    bool allow_immediate_check{false};
+    bool immediate_check_pending{false};
 };
 
 [[nodiscard]] int compare_time(const timespec& left, const timespec& right) noexcept {
@@ -368,8 +338,7 @@ struct Deadline final {
     return Result<Deadline>::success(std::move(deadline));
 }
 
-[[nodiscard]] Result<void> wait_fd(int fd, short events, const Deadline* deadline) noexcept {
-    bool wait_attempted = false;
+[[nodiscard]] Result<void> wait_fd(int fd, short events, Deadline* deadline) noexcept {
     for (;;) {
         timespec remaining{};
         const timespec* timeout = nullptr;
@@ -380,7 +349,7 @@ struct Deadline final {
                 return Result<void>::failure(map_runtime_error(native_error));
             }
             if (compare_time(now, deadline->absolute) >= 0 &&
-                (!deadline->allow_immediate_check || wait_attempted)) {
+                !deadline->immediate_check_pending) {
                 return Result<void>::failure(Error::TimedOut);
             }
             if (compare_time(now, deadline->absolute) < 0) {
@@ -397,7 +366,7 @@ struct Deadline final {
         }
 
         short revents = 0;
-        wait_attempted = true;
+        if (deadline != nullptr) deadline->immediate_check_pending = false;
         const int waited = tty::wait(fd, events, timeout, revents);
         if (waited < 0) {
             const int native_error = errno;
@@ -420,12 +389,12 @@ struct Deadline final {
 }
 
 [[nodiscard]] Result<std::size_t> read_transfer(
-    int fd, std::byte* data, std::size_t size, const Deadline* deadline, bool immediate) noexcept {
+    int fd, std::byte* data, std::size_t size, Deadline* deadline, bool immediate) noexcept {
     if (fd < 0) return Result<std::size_t>::failure(Error::NotOpen);
     if (data == nullptr && size != 0) return Result<std::size_t>::failure(Error::InvalidArgument);
     if (size == 0) return Result<std::size_t>::success(0);
 
-    bool zero_progress_seen = false;
+    bool readiness_race_seen = false;
     for (;;) {
         if (!immediate) {
             auto ready = wait_fd(fd, POLLIN, deadline);
@@ -439,8 +408,8 @@ struct Deadline final {
         if (transferred == 0) {
             // With VMIN=0 a non-blocking TTY may return zero after a readiness race.
             if (immediate) return Result<std::size_t>::failure(Error::WouldBlock);
-            if (zero_progress_seen) return Result<std::size_t>::failure(Error::Io);
-            zero_progress_seen = true;
+            if (readiness_race_seen) return Result<std::size_t>::failure(Error::Io);
+            readiness_race_seen = true;
             continue;
         }
 
@@ -448,6 +417,8 @@ struct Deadline final {
         if (native_error == EINTR) continue;
         if (native_error == EAGAIN || native_error == EWOULDBLOCK) {
             if (immediate) return Result<std::size_t>::failure(Error::WouldBlock);
+            if (readiness_race_seen) return Result<std::size_t>::failure(Error::Io);
+            readiness_race_seen = true;
             continue;
         }
         return Result<std::size_t>::failure(map_runtime_error(native_error));
@@ -455,12 +426,13 @@ struct Deadline final {
 }
 
 [[nodiscard]] Result<std::size_t> write_transfer(
-    int fd, const std::byte* data, std::size_t size, const Deadline* deadline,
+    int fd, const std::byte* data, std::size_t size, Deadline* deadline,
     bool immediate) noexcept {
     if (fd < 0) return Result<std::size_t>::failure(Error::NotOpen);
     if (data == nullptr && size != 0) return Result<std::size_t>::failure(Error::InvalidArgument);
     if (size == 0) return Result<std::size_t>::success(0);
 
+    bool readiness_race_seen = false;
     for (;;) {
         if (!immediate) {
             auto ready = wait_fd(fd, POLLOUT, deadline);
@@ -479,6 +451,8 @@ struct Deadline final {
         if (native_error == EINTR) continue;
         if (native_error == EAGAIN || native_error == EWOULDBLOCK) {
             if (immediate) return Result<std::size_t>::failure(Error::WouldBlock);
+            if (readiness_race_seen) return Result<std::size_t>::failure(Error::Io);
+            readiness_race_seen = true;
             continue;
         }
         return Result<std::size_t>::failure(map_runtime_error(native_error));
@@ -500,11 +474,9 @@ struct Deadline final {
 
 Port::~Port() noexcept { static_cast<void>(close()); }
 
-Port::Port(Port&& other) noexcept
-    : fd_(other.fd_), rts_automatic_(other.rts_automatic_), exclusive_(other.exclusive_) {
+Port::Port(Port&& other) noexcept : fd_(other.fd_), rts_automatic_(other.rts_automatic_) {
     other.fd_ = kClosedFd;
     other.rts_automatic_ = false;
-    other.exclusive_ = false;
 }
 
 bool Port::is_open() const noexcept { return fd_ >= 0; }
@@ -541,7 +513,7 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
     termios original_attributes{};
     if (tty::read_attributes(candidate, original_attributes) < 0) {
         const int native_error = errno;
-        release_open_candidate(candidate, true);
+        release_open_candidate(candidate);
         return Result<void>::failure(map_runtime_error(native_error));
     }
 
@@ -552,11 +524,11 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
         if (is_unsupported_error(native_error)) {
             rs485_supported = false;
             if (config.rs485.enabled) {
-                release_open_candidate(candidate, true);
+                release_open_candidate(candidate);
                 return Result<void>::failure(Error::Unsupported);
             }
         } else {
-            release_open_candidate(candidate, true);
+            release_open_candidate(candidate);
             return Result<void>::failure(map_runtime_error(native_error));
         }
     }
@@ -564,13 +536,13 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
     termios requested_attributes = original_attributes;
     auto configured = configure_attributes(requested_attributes, config, speed.value());
     if (!configured) {
-        release_open_candidate(candidate, true);
+        release_open_candidate(candidate);
         return Result<void>::failure(configured.error());
     }
 
     if (tty::write_attributes(candidate, TCSANOW, requested_attributes) < 0) {
         const int native_error = errno;
-        rollback_open(candidate, original_attributes, original_rs485, true, false, true);
+        rollback_open(candidate, original_attributes, original_rs485, false);
         return Result<void>::failure(map_runtime_error(native_error));
     }
 
@@ -580,7 +552,7 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
         const auto requested_rs485 = make_rs485_request(config.rs485);
         if (tty::write_rs485(candidate, requested_rs485) < 0) {
             const int native_error = errno;
-            rollback_open(candidate, original_attributes, original_rs485, true, true, true);
+            rollback_open(candidate, original_attributes, original_rs485, true);
             return Result<void>::failure(
                 is_unsupported_error(native_error) ? Error::Unsupported
                                                    : map_runtime_error(native_error));
@@ -590,11 +562,11 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
     termios effective_attributes{};
     if (tty::read_attributes(candidate, effective_attributes) < 0) {
         const int native_error = errno;
-        rollback_open(candidate, original_attributes, original_rs485, true, rs485_attempted, true);
+        rollback_open(candidate, original_attributes, original_rs485, rs485_attempted);
         return Result<void>::failure(map_runtime_error(native_error));
     }
-    if (!attributes_match(effective_attributes, config, speed.value())) {
-        rollback_open(candidate, original_attributes, original_rs485, true, rs485_attempted, true);
+    if (!attributes_match(effective_attributes, requested_attributes)) {
+        rollback_open(candidate, original_attributes, original_rs485, rs485_attempted);
         return Result<void>::failure(Error::Unsupported);
     }
 
@@ -602,18 +574,17 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
         serial_rs485 effective_rs485{};
         if (tty::read_rs485(candidate, effective_rs485) < 0) {
             const int native_error = errno;
-            rollback_open(candidate, original_attributes, original_rs485, true, true, true);
+            rollback_open(candidate, original_attributes, original_rs485, true);
             return Result<void>::failure(map_runtime_error(native_error));
         }
         if (!rs485_matches(effective_rs485, config.rs485)) {
-            rollback_open(candidate, original_attributes, original_rs485, true, true, true);
+            rollback_open(candidate, original_attributes, original_rs485, true);
             return Result<void>::failure(Error::Unsupported);
         }
     }
 
     fd_ = candidate;
     rts_automatic_ = config.rs485.enabled || config.flow_control == FlowControl::RtsCts;
-    exclusive_ = true;
     return Result<void>::success();
 }
 
@@ -621,13 +592,11 @@ hardware::Result<void, Error> Port::close() noexcept {
     if (!is_open()) return Result<void>::success();
 
     const int closing = fd_;
-    const bool was_exclusive = exclusive_;
     fd_ = kClosedFd;
     rts_automatic_ = false;
-    exclusive_ = false;
 
     int exclusive_error = 0;
-    if (was_exclusive && tty::clear_exclusive(closing) < 0) exclusive_error = errno;
+    if (tty::clear_exclusive(closing) < 0) exclusive_error = errno;
     if (tty::close(closing) < 0) {
         const int native_error = errno;
         return Result<void>::failure(map_runtime_error(native_error));

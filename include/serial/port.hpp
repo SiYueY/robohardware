@@ -86,7 +86,6 @@ public:
 private:
     int fd_{-1};
     bool rts_automatic_{false};
-    bool exclusive_{false};
 };
 
 }  // namespace serial

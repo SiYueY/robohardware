@@ -14,8 +14,9 @@ including partial transfers. Overloads without a timeout may wait indefinitely. 
 use one monotonic deadline covering the whole operation; a negative timeout is invalid, while zero
 performs one immediate readiness check and reports `TimedOut` if not ready. `try_read` and
 `try_write` never wait and return `WouldBlock` when no immediate progress is possible.
-`wait_readable` and `wait_writable` only observe readiness. A read that observes two consecutive
-ready-but-zero-byte results fails with `Io` after tolerating one readiness race.
+`wait_readable` and `wait_writable` only observe readiness. A read or write that observes two
+consecutive ready-but-no-progress results (`read()==0` for reads, or `EAGAIN`/`EWOULDBLOCK`) fails
+with `Io` after tolerating one readiness race.
 
 Queue methods have distinct effects: `bytes_available` and `bytes_pending` are snapshots,
 `discard_*` are destructive, and `drain()` waits for transmission of already accepted output.

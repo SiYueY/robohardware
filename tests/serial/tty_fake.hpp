@@ -37,6 +37,11 @@ struct WaitResult final {
     short revents{0};
 };
 
+struct TransferResult final {
+    ssize_t result;
+    int native_error{0};
+};
+
 void reset() noexcept;
 void fail(Operation operation, std::size_t occurrence, int native_error) noexcept;
 void ignore_write(Operation operation) noexcept;
@@ -45,8 +50,9 @@ void set_rs485_supported(bool supported) noexcept;
 void set_wait_result(int result, short revents = 0) noexcept;
 void set_wait_results(std::vector<WaitResult> values);
 void set_read_result(ssize_t result) noexcept;
-void set_read_results(std::vector<ssize_t> values);
+void set_read_results(std::vector<TransferResult> values);
 void set_write_result(ssize_t result) noexcept;
+void set_write_results(std::vector<TransferResult> values);
 void set_monotonic_times(std::vector<timespec> values);
 void set_input_queue_size(int value) noexcept;
 void set_output_queue_size(int value) noexcept;

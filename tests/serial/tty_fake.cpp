@@ -26,8 +26,10 @@ struct State final {
     std::vector<timespec> wait_timeouts;
     std::vector<fake::WaitResult> wait_results;
     std::size_t wait_result_index{0};
-    std::vector<ssize_t> read_results;
+    std::vector<fake::TransferResult> read_results;
     std::size_t read_result_index{0};
+    std::vector<fake::TransferResult> write_results;
+    std::size_t write_result_index{0};
 
     bool terminal{true};
     bool rs485_supported{false};
@@ -143,21 +145,34 @@ int wait(int, short events, const timespec* timeout, short& revents) noexcept {
 
 ssize_t read(int, void*, std::size_t size) noexcept {
     if (!begin(Operation::Read)) return -1;
-    ssize_t result = state.read_result;
+    fake::TransferResult transfer{state.read_result};
     if (!state.read_results.empty()) {
         const std::size_t position =
             std::min(state.read_result_index, state.read_results.size() - 1);
-        result = state.read_results[position];
+        transfer = state.read_results[position];
         if (state.read_result_index < state.read_results.size()) ++state.read_result_index;
     }
-    if (result < 0) return result;
-    return std::min<ssize_t>(result, static_cast<ssize_t>(size));
+    if (transfer.result < 0) {
+        if (transfer.native_error != 0) errno = transfer.native_error;
+        return transfer.result;
+    }
+    return std::min<ssize_t>(transfer.result, static_cast<ssize_t>(size));
 }
 
 ssize_t write(int, const void*, std::size_t size) noexcept {
     if (!begin(Operation::Write)) return -1;
-    if (state.write_result < 0) return state.write_result;
-    return std::min<ssize_t>(state.write_result, static_cast<ssize_t>(size));
+    fake::TransferResult transfer{state.write_result};
+    if (!state.write_results.empty()) {
+        const std::size_t position =
+            std::min(state.write_result_index, state.write_results.size() - 1);
+        transfer = state.write_results[position];
+        if (state.write_result_index < state.write_results.size()) ++state.write_result_index;
+    }
+    if (transfer.result < 0) {
+        if (transfer.native_error != 0) errno = transfer.native_error;
+        return transfer.result;
+    }
+    return std::min<ssize_t>(transfer.result, static_cast<ssize_t>(size));
 }
 
 int discard(int, int) noexcept { return begin(Operation::Discard) ? 0 : -1; }
@@ -220,12 +235,17 @@ void set_wait_results(std::vector<WaitResult> values) {
 
 void set_read_result(ssize_t result) noexcept { state.read_result = result; }
 
-void set_read_results(std::vector<ssize_t> values) {
+void set_read_results(std::vector<TransferResult> values) {
     state.read_results = std::move(values);
     state.read_result_index = 0;
 }
 
 void set_write_result(ssize_t result) noexcept { state.write_result = result; }
+
+void set_write_results(std::vector<TransferResult> values) {
+    state.write_results = std::move(values);
+    state.write_result_index = 0;
+}
 
 void set_monotonic_times(std::vector<timespec> values) {
     state.monotonic_times = std::move(values);
