@@ -19,57 +19,85 @@ constexpr long kNanosecondsPerSecond = 1'000'000'000L;
 template <typename T>
 using Result = hardware::Result<T, Error>;
 
-[[nodiscard]] bool is_unsupported_error(int native_error) noexcept {
-    return native_error == ENOTTY || native_error == EOPNOTSUPP || native_error == ENOSYS;
-}
+enum class ErrorContext { Open, Runtime };
+enum class TransferMode { Wait, Immediate };
 
-[[nodiscard]] bool is_disconnected_error(int native_error) noexcept {
-    return native_error == EIO || native_error == ENXIO || native_error == ENODEV ||
-           native_error == ECONNRESET;
-}
-
-[[nodiscard]] Error map_open_error(int native_error) noexcept {
-    if (native_error == EACCES || native_error == EPERM) return Error::PermissionDenied;
-    if (native_error == ENOENT || native_error == ENODEV || native_error == ENXIO) {
-        return Error::DeviceNotFound;
+[[nodiscard]] Error to_error(int err, ErrorContext context) noexcept {
+    switch (err) {
+        case EACCES:
+        case EPERM:
+            return Error::PermissionDenied;
+        case EBUSY:
+            return Error::Busy;
+        case ENOMEM:
+            return Error::OutOfMemory;
+        case ENOTTY:
+        case EOPNOTSUPP:
+        case ENOSYS:
+            return Error::Unsupported;
+        case ENOENT:
+            return Error::DeviceNotFound;
+        case ENODEV:
+        case ENXIO:
+            return context == ErrorContext::Open ? Error::DeviceNotFound : Error::Disconnected;
+        case EIO:
+        case ECONNRESET:
+            return context == ErrorContext::Runtime ? Error::Disconnected : Error::Io;
+        default:
+            return Error::Io;
     }
-    if (native_error == EBUSY) return Error::Busy;
-    if (native_error == ENOMEM) return Error::OutOfMemory;
-    return Error::Io;
-}
-
-[[nodiscard]] Error map_runtime_error(int native_error) noexcept {
-    if (native_error == EACCES || native_error == EPERM) return Error::PermissionDenied;
-    if (native_error == EBUSY) return Error::Busy;
-    if (is_unsupported_error(native_error)) return Error::Unsupported;
-    if (is_disconnected_error(native_error)) return Error::Disconnected;
-    return Error::Io;
 }
 
 [[nodiscard]] bool is_valid(DataBits value) noexcept {
-    return value == DataBits::Five || value == DataBits::Six || value == DataBits::Seven ||
-           value == DataBits::Eight;
+    switch (value) {
+        case DataBits::Five:
+        case DataBits::Six:
+        case DataBits::Seven:
+        case DataBits::Eight:
+            return true;
+    }
+    return false;
 }
 
 [[nodiscard]] bool is_valid(Parity value) noexcept {
-    return value == Parity::None || value == Parity::Odd || value == Parity::Even ||
-           value == Parity::Mark || value == Parity::Space;
+    switch (value) {
+        case Parity::None:
+        case Parity::Odd:
+        case Parity::Even:
+        case Parity::Mark:
+        case Parity::Space:
+            return true;
+    }
+    return false;
 }
 
 [[nodiscard]] bool is_valid(StopBits value) noexcept {
-    return value == StopBits::One || value == StopBits::Two;
+    switch (value) {
+        case StopBits::One:
+        case StopBits::Two:
+            return true;
+    }
+    return false;
 }
 
 [[nodiscard]] bool is_valid(FlowControl value) noexcept {
-    return value == FlowControl::None || value == FlowControl::XonXoff ||
-           value == FlowControl::RtsCts;
+    switch (value) {
+        case FlowControl::None:
+        case FlowControl::XonXoff:
+        case FlowControl::RtsCts:
+            return true;
+    }
+    return false;
 }
 
-[[nodiscard]] bool to_termios_speed(std::uint32_t baud_rate, speed_t& speed) noexcept {
+[[nodiscard]] bool is_valid_delay(std::chrono::milliseconds delay) noexcept {
+    return delay.count() >= 0 && delay.count() <= std::numeric_limits<std::uint32_t>::max();
+}
+
+[[nodiscard]] Result<speed_t> to_termios_speed(std::uint32_t baud_rate) noexcept {
 #define SERIAL_BAUD(value) \
-    case value:             \
-        speed = B##value;   \
-        return true
+    case value:            \
+        return Result<speed_t>::success(B##value)
     switch (baud_rate) {
         SERIAL_BAUD(50);
         SERIAL_BAUD(75);
@@ -134,7 +162,7 @@ using Result = hardware::Result<T, Error>;
         SERIAL_BAUD(4000000);
 #endif
         default:
-            return false;
+            return Result<speed_t>::failure(Error::Unsupported);
     }
 #undef SERIAL_BAUD
 }
@@ -143,10 +171,8 @@ using Result = hardware::Result<T, Error>;
     if (!is_valid(config.data_bits) || !is_valid(config.parity) || !is_valid(config.stop_bits) ||
         !is_valid(config.flow_control) || config.baud_rate == 0 ||
         (config.rs485.enabled && config.flow_control == FlowControl::RtsCts) ||
-        config.rs485.delay_before_send.count() < 0 ||
-        config.rs485.delay_after_send.count() < 0 ||
-        config.rs485.delay_before_send.count() > std::numeric_limits<std::uint32_t>::max() ||
-        config.rs485.delay_after_send.count() > std::numeric_limits<std::uint32_t>::max()) {
+        !is_valid_delay(config.rs485.delay_before_send) ||
+        !is_valid_delay(config.rs485.delay_after_send)) {
         return Result<speed_t>::failure(Error::InvalidArgument);
     }
 
@@ -166,11 +192,7 @@ using Result = hardware::Result<T, Error>;
     }
 #endif
 
-    speed_t speed{};
-    if (!to_termios_speed(config.baud_rate, speed)) {
-        return Result<speed_t>::failure(Error::Unsupported);
-    }
-    return Result<speed_t>::success(speed);
+    return to_termios_speed(config.baud_rate);
 }
 
 void apply_raw_mode(termios& attributes) noexcept {
@@ -227,17 +249,18 @@ void apply_raw_mode(termios& attributes) noexcept {
     if (config.flow_control == FlowControl::RtsCts) attributes.c_cflag |= CRTSCTS;
 #endif
 
-    if (::cfsetispeed(&attributes, speed) < 0 || ::cfsetospeed(&attributes, speed) < 0) {
-        return Result<void>::failure(map_runtime_error(errno));
+    if (::cfsetispeed(&attributes, speed) < 0) {
+        return Result<void>::failure(to_error(errno, ErrorContext::Runtime));
+    }
+    if (::cfsetospeed(&attributes, speed) < 0) {
+        return Result<void>::failure(to_error(errno, ErrorContext::Runtime));
     }
     return Result<void>::success();
 }
 
-[[nodiscard]] bool attributes_match(
-    const termios& actual, const termios& requested) noexcept {
-    constexpr tcflag_t input_mask =
-        IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | INPCK | IGNPAR | IXON |
-        IXOFF | IXANY;
+[[nodiscard]] bool attributes_match(const termios& actual, const termios& requested) noexcept {
+    constexpr tcflag_t input_mask = IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL |
+                                    INPCK | IGNPAR | IXON | IXOFF | IXANY;
     constexpr tcflag_t output_mask = OPOST;
     constexpr tcflag_t local_mask = ECHO | ECHONL | ICANON | ISIG | IEXTEN;
     tcflag_t control_mask = CSIZE | PARENB | PARODD | CSTOPB | CREAD | CLOCAL;
@@ -248,14 +271,15 @@ void apply_raw_mode(termios& attributes) noexcept {
     control_mask |= CRTSCTS;
 #endif
 
-    return (actual.c_iflag & input_mask) == (requested.c_iflag & input_mask) &&
-           (actual.c_oflag & output_mask) == (requested.c_oflag & output_mask) &&
-           (actual.c_lflag & local_mask) == (requested.c_lflag & local_mask) &&
-           (actual.c_cflag & control_mask) == (requested.c_cflag & control_mask) &&
-           actual.c_cc[VMIN] == requested.c_cc[VMIN] &&
-           actual.c_cc[VTIME] == requested.c_cc[VTIME] &&
-           ::cfgetispeed(&actual) == ::cfgetispeed(&requested) &&
-           ::cfgetospeed(&actual) == ::cfgetospeed(&requested);
+    if ((actual.c_iflag & input_mask) != (requested.c_iflag & input_mask)) return false;
+    if ((actual.c_oflag & output_mask) != (requested.c_oflag & output_mask)) return false;
+    if ((actual.c_lflag & local_mask) != (requested.c_lflag & local_mask)) return false;
+    if ((actual.c_cflag & control_mask) != (requested.c_cflag & control_mask)) return false;
+    if (actual.c_cc[VMIN] != requested.c_cc[VMIN]) return false;
+    if (actual.c_cc[VTIME] != requested.c_cc[VTIME]) return false;
+    if (::cfgetispeed(&actual) != ::cfgetispeed(&requested)) return false;
+    if (::cfgetospeed(&actual) != ::cfgetospeed(&requested)) return false;
+    return true;
 }
 
 [[nodiscard]] serial_rs485 make_rs485_request(const Config::RS485& config) noexcept {
@@ -274,10 +298,8 @@ void apply_raw_mode(termios& attributes) noexcept {
 }
 
 [[nodiscard]] bool rs485_matches(
-    const serial_rs485& actual, const Config::RS485& requested_config) noexcept {
-    const auto requested = make_rs485_request(requested_config);
-    unsigned int owned_flags =
-        SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND;
+    const serial_rs485& actual, const serial_rs485& requested) noexcept {
+    unsigned int owned_flags = SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND;
 #ifdef SER_RS485_RX_DURING_TX
     owned_flags |= SER_RS485_RX_DURING_TX;
 #endif
@@ -316,8 +338,7 @@ struct Deadline final {
 
     timespec now{};
     if (tty::monotonic_now(now) < 0) {
-        const int native_error = errno;
-        return Result<Deadline>::failure(map_runtime_error(native_error));
+        return Result<Deadline>::failure(to_error(errno, ErrorContext::Runtime));
     }
 
     const auto seconds = timeout.count() / kNanosecondsPerSecond;
@@ -326,11 +347,12 @@ struct Deadline final {
         return Result<Deadline>::failure(Error::InvalidArgument);
     }
 
-    Deadline deadline{{
-                          now.tv_sec + static_cast<time_t>(seconds),
-                          now.tv_nsec + static_cast<long>(nanoseconds),
-                      },
-                      timeout.count() == 0};
+    Deadline deadline{
+        {
+            now.tv_sec + static_cast<time_t>(seconds),
+            now.tv_nsec + static_cast<long>(nanoseconds),
+        },
+        timeout.count() == 0};
     if (deadline.absolute.tv_nsec >= kNanosecondsPerSecond) {
         ++deadline.absolute.tv_sec;
         deadline.absolute.tv_nsec -= kNanosecondsPerSecond;
@@ -345,14 +367,13 @@ struct Deadline final {
         if (deadline != nullptr) {
             timespec now{};
             if (tty::monotonic_now(now) < 0) {
-                const int native_error = errno;
-                return Result<void>::failure(map_runtime_error(native_error));
+                return Result<void>::failure(to_error(errno, ErrorContext::Runtime));
             }
-            if (compare_time(now, deadline->absolute) >= 0 &&
-                !deadline->immediate_check_pending) {
+            const bool expired = compare_time(now, deadline->absolute) >= 0;
+            if (expired && !deadline->immediate_check_pending) {
                 return Result<void>::failure(Error::TimedOut);
             }
-            if (compare_time(now, deadline->absolute) < 0) {
+            if (!expired) {
                 remaining = {
                     deadline->absolute.tv_sec - now.tv_sec,
                     deadline->absolute.tv_nsec - now.tv_nsec,
@@ -369,9 +390,9 @@ struct Deadline final {
         if (deadline != nullptr) deadline->immediate_check_pending = false;
         const int waited = tty::wait(fd, events, timeout, revents);
         if (waited < 0) {
-            const int native_error = errno;
-            if (native_error == EINTR) continue;
-            return Result<void>::failure(map_runtime_error(native_error));
+            const int err = errno;
+            if (err == EINTR) continue;
+            return Result<void>::failure(to_error(err, ErrorContext::Runtime));
         }
         if (waited == 0) return Result<void>::failure(Error::TimedOut);
         if ((revents & POLLNVAL) != 0) return Result<void>::failure(Error::NotOpen);
@@ -389,14 +410,14 @@ struct Deadline final {
 }
 
 [[nodiscard]] Result<std::size_t> read_transfer(
-    int fd, std::byte* data, std::size_t size, Deadline* deadline, bool immediate) noexcept {
+    int fd, std::byte* data, std::size_t size, Deadline* deadline, TransferMode mode) noexcept {
     if (fd < 0) return Result<std::size_t>::failure(Error::NotOpen);
     if (data == nullptr && size != 0) return Result<std::size_t>::failure(Error::InvalidArgument);
     if (size == 0) return Result<std::size_t>::success(0);
 
     bool readiness_race_seen = false;
     for (;;) {
-        if (!immediate) {
+        if (mode == TransferMode::Wait) {
             auto ready = wait_fd(fd, POLLIN, deadline);
             if (!ready) return Result<std::size_t>::failure(ready.error());
         }
@@ -407,34 +428,36 @@ struct Deadline final {
         }
         if (transferred == 0) {
             // With VMIN=0 a non-blocking TTY may return zero after a readiness race.
-            if (immediate) return Result<std::size_t>::failure(Error::WouldBlock);
+            if (mode == TransferMode::Immediate)
+                return Result<std::size_t>::failure(Error::WouldBlock);
             if (readiness_race_seen) return Result<std::size_t>::failure(Error::Io);
             readiness_race_seen = true;
             continue;
         }
 
-        const int native_error = errno;
-        if (native_error == EINTR) continue;
-        if (native_error == EAGAIN || native_error == EWOULDBLOCK) {
-            if (immediate) return Result<std::size_t>::failure(Error::WouldBlock);
+        const int err = errno;
+        if (err == EINTR) continue;
+        if (err == EAGAIN || err == EWOULDBLOCK) {
+            if (mode == TransferMode::Immediate)
+                return Result<std::size_t>::failure(Error::WouldBlock);
             if (readiness_race_seen) return Result<std::size_t>::failure(Error::Io);
             readiness_race_seen = true;
             continue;
         }
-        return Result<std::size_t>::failure(map_runtime_error(native_error));
+        return Result<std::size_t>::failure(to_error(err, ErrorContext::Runtime));
     }
 }
 
 [[nodiscard]] Result<std::size_t> write_transfer(
     int fd, const std::byte* data, std::size_t size, Deadline* deadline,
-    bool immediate) noexcept {
+    TransferMode mode) noexcept {
     if (fd < 0) return Result<std::size_t>::failure(Error::NotOpen);
     if (data == nullptr && size != 0) return Result<std::size_t>::failure(Error::InvalidArgument);
     if (size == 0) return Result<std::size_t>::success(0);
 
     bool readiness_race_seen = false;
     for (;;) {
-        if (!immediate) {
+        if (mode == TransferMode::Wait) {
             auto ready = wait_fd(fd, POLLOUT, deadline);
             if (!ready) return Result<std::size_t>::failure(ready.error());
         }
@@ -444,18 +467,20 @@ struct Deadline final {
             return Result<std::size_t>::success(static_cast<std::size_t>(transferred));
         }
         if (transferred == 0) {
-            return Result<std::size_t>::failure(immediate ? Error::WouldBlock : Error::Io);
+            return Result<std::size_t>::failure(
+                mode == TransferMode::Immediate ? Error::WouldBlock : Error::Io);
         }
 
-        const int native_error = errno;
-        if (native_error == EINTR) continue;
-        if (native_error == EAGAIN || native_error == EWOULDBLOCK) {
-            if (immediate) return Result<std::size_t>::failure(Error::WouldBlock);
+        const int err = errno;
+        if (err == EINTR) continue;
+        if (err == EAGAIN || err == EWOULDBLOCK) {
+            if (mode == TransferMode::Immediate)
+                return Result<std::size_t>::failure(Error::WouldBlock);
             if (readiness_race_seen) return Result<std::size_t>::failure(Error::Io);
             readiness_race_seen = true;
             continue;
         }
-        return Result<std::size_t>::failure(map_runtime_error(native_error));
+        return Result<std::size_t>::failure(to_error(err, ErrorContext::Runtime));
     }
 }
 
@@ -464,8 +489,7 @@ struct Deadline final {
 
     int lines = 0;
     if (tty::read_modem_lines(fd, lines) < 0) {
-        const int native_error = errno;
-        return Result<bool>::failure(map_runtime_error(native_error));
+        return Result<bool>::failure(to_error(errno, ErrorContext::Runtime));
     }
     return Result<bool>::success((lines & line) != 0);
 }
@@ -492,36 +516,35 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
 
     const int candidate = tty::open(path.c_str());
     if (candidate < 0) {
-        const int native_error = errno;
-        return Result<void>::failure(map_open_error(native_error));
+        return Result<void>::failure(to_error(errno, ErrorContext::Open));
     }
 
     const int terminal = tty::is_terminal(candidate);
     if (terminal <= 0) {
-        const int native_error = errno;
+        const int err = errno;
         static_cast<void>(tty::close(candidate));
         return Result<void>::failure(
-            terminal == 0 ? Error::NotTerminal : map_runtime_error(native_error));
+            terminal == 0 ? Error::NotTerminal : to_error(err, ErrorContext::Runtime));
     }
 
     if (tty::set_exclusive(candidate) < 0) {
-        const int native_error = errno;
+        const int err = errno;
         static_cast<void>(tty::close(candidate));
-        return Result<void>::failure(map_runtime_error(native_error));
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
 
     termios original_attributes{};
     if (tty::read_attributes(candidate, original_attributes) < 0) {
-        const int native_error = errno;
+        const int err = errno;
         release_open_candidate(candidate);
-        return Result<void>::failure(map_runtime_error(native_error));
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
 
     serial_rs485 original_rs485{};
     bool rs485_supported = true;
     if (tty::read_rs485(candidate, original_rs485) < 0) {
-        const int native_error = errno;
-        if (is_unsupported_error(native_error)) {
+        const int err = errno;
+        if (to_error(err, ErrorContext::Runtime) == Error::Unsupported) {
             rs485_supported = false;
             if (config.rs485.enabled) {
                 release_open_candidate(candidate);
@@ -529,7 +552,7 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
             }
         } else {
             release_open_candidate(candidate);
-            return Result<void>::failure(map_runtime_error(native_error));
+            return Result<void>::failure(to_error(err, ErrorContext::Runtime));
         }
     }
 
@@ -541,29 +564,27 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
     }
 
     if (tty::write_attributes(candidate, TCSANOW, requested_attributes) < 0) {
-        const int native_error = errno;
+        const int err = errno;
         rollback_open(candidate, original_attributes, original_rs485, false);
-        return Result<void>::failure(map_runtime_error(native_error));
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
 
+    const auto requested_rs485 = make_rs485_request(config.rs485);
     bool rs485_attempted = false;
     if (rs485_supported) {
         rs485_attempted = true;
-        const auto requested_rs485 = make_rs485_request(config.rs485);
         if (tty::write_rs485(candidate, requested_rs485) < 0) {
-            const int native_error = errno;
+            const int err = errno;
             rollback_open(candidate, original_attributes, original_rs485, true);
-            return Result<void>::failure(
-                is_unsupported_error(native_error) ? Error::Unsupported
-                                                   : map_runtime_error(native_error));
+            return Result<void>::failure(to_error(err, ErrorContext::Runtime));
         }
     }
 
     termios effective_attributes{};
     if (tty::read_attributes(candidate, effective_attributes) < 0) {
-        const int native_error = errno;
+        const int err = errno;
         rollback_open(candidate, original_attributes, original_rs485, rs485_attempted);
-        return Result<void>::failure(map_runtime_error(native_error));
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
     if (!attributes_match(effective_attributes, requested_attributes)) {
         rollback_open(candidate, original_attributes, original_rs485, rs485_attempted);
@@ -573,11 +594,11 @@ hardware::Result<void, Error> Port::open(const std::string& path, const Config& 
     if (rs485_supported) {
         serial_rs485 effective_rs485{};
         if (tty::read_rs485(candidate, effective_rs485) < 0) {
-            const int native_error = errno;
+            const int err = errno;
             rollback_open(candidate, original_attributes, original_rs485, true);
-            return Result<void>::failure(map_runtime_error(native_error));
+            return Result<void>::failure(to_error(err, ErrorContext::Runtime));
         }
-        if (!rs485_matches(effective_rs485, config.rs485)) {
+        if (!rs485_matches(effective_rs485, requested_rs485)) {
             rollback_open(candidate, original_attributes, original_rs485, true);
             return Result<void>::failure(Error::Unsupported);
         }
@@ -598,15 +619,17 @@ hardware::Result<void, Error> Port::close() noexcept {
     int exclusive_error = 0;
     if (tty::clear_exclusive(closing) < 0) exclusive_error = errno;
     if (tty::close(closing) < 0) {
-        const int native_error = errno;
-        return Result<void>::failure(map_runtime_error(native_error));
+        const int err = errno;
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
-    if (exclusive_error != 0) return Result<void>::failure(map_runtime_error(exclusive_error));
+    if (exclusive_error != 0) {
+        return Result<void>::failure(to_error(exclusive_error, ErrorContext::Runtime));
+    }
     return Result<void>::success();
 }
 
 hardware::Result<std::size_t, Error> Port::read(std::byte* data, std::size_t size) noexcept {
-    return read_transfer(fd_, data, size, nullptr, false);
+    return read_transfer(fd_, data, size, nullptr, TransferMode::Wait);
 }
 
 hardware::Result<std::size_t, Error> Port::read(
@@ -614,17 +637,15 @@ hardware::Result<std::size_t, Error> Port::read(
     if (!is_open()) return Result<std::size_t>::failure(Error::NotOpen);
     auto deadline = make_deadline(timeout);
     if (!deadline) return Result<std::size_t>::failure(deadline.error());
-    return read_transfer(fd_, data, size, &deadline.value(), false);
+    return read_transfer(fd_, data, size, &deadline.value(), TransferMode::Wait);
 }
 
-hardware::Result<std::size_t, Error> Port::try_read(
-    std::byte* data, std::size_t size) noexcept {
-    return read_transfer(fd_, data, size, nullptr, true);
+hardware::Result<std::size_t, Error> Port::try_read(std::byte* data, std::size_t size) noexcept {
+    return read_transfer(fd_, data, size, nullptr, TransferMode::Immediate);
 }
 
-hardware::Result<std::size_t, Error> Port::write(
-    const std::byte* data, std::size_t size) noexcept {
-    return write_transfer(fd_, data, size, nullptr, false);
+hardware::Result<std::size_t, Error> Port::write(const std::byte* data, std::size_t size) noexcept {
+    return write_transfer(fd_, data, size, nullptr, TransferMode::Wait);
 }
 
 hardware::Result<std::size_t, Error> Port::write(
@@ -632,12 +653,12 @@ hardware::Result<std::size_t, Error> Port::write(
     if (!is_open()) return Result<std::size_t>::failure(Error::NotOpen);
     auto deadline = make_deadline(timeout);
     if (!deadline) return Result<std::size_t>::failure(deadline.error());
-    return write_transfer(fd_, data, size, &deadline.value(), false);
+    return write_transfer(fd_, data, size, &deadline.value(), TransferMode::Wait);
 }
 
 hardware::Result<std::size_t, Error> Port::try_write(
     const std::byte* data, std::size_t size) noexcept {
-    return write_transfer(fd_, data, size, nullptr, true);
+    return write_transfer(fd_, data, size, nullptr, TransferMode::Immediate);
 }
 
 hardware::Result<void, Error> Port::wait_readable(std::chrono::nanoseconds timeout) noexcept {
@@ -658,9 +679,9 @@ hardware::Result<std::size_t, Error> Port::bytes_available() const noexcept {
     if (!is_open()) return Result<std::size_t>::failure(Error::NotOpen);
 
     int value = 0;
-    if (tty::read_input_queue_size(fd_, value) < 0) {
-        const int native_error = errno;
-        return Result<std::size_t>::failure(map_runtime_error(native_error));
+    if (tty::input_queue_size(fd_, value) < 0) {
+        const int err = errno;
+        return Result<std::size_t>::failure(to_error(err, ErrorContext::Runtime));
     }
     if (value < 0) return Result<std::size_t>::failure(Error::Io);
     return Result<std::size_t>::success(static_cast<std::size_t>(value));
@@ -670,9 +691,9 @@ hardware::Result<std::size_t, Error> Port::bytes_pending() const noexcept {
     if (!is_open()) return Result<std::size_t>::failure(Error::NotOpen);
 
     int value = 0;
-    if (tty::read_output_queue_size(fd_, value) < 0) {
-        const int native_error = errno;
-        return Result<std::size_t>::failure(map_runtime_error(native_error));
+    if (tty::output_queue_size(fd_, value) < 0) {
+        const int err = errno;
+        return Result<std::size_t>::failure(to_error(err, ErrorContext::Runtime));
     }
     if (value < 0) return Result<std::size_t>::failure(Error::Io);
     return Result<std::size_t>::success(static_cast<std::size_t>(value));
@@ -681,8 +702,8 @@ hardware::Result<std::size_t, Error> Port::bytes_pending() const noexcept {
 hardware::Result<void, Error> Port::discard_input() noexcept {
     if (!is_open()) return Result<void>::failure(Error::NotOpen);
     if (tty::discard(fd_, TCIFLUSH) < 0) {
-        const int native_error = errno;
-        return Result<void>::failure(map_runtime_error(native_error));
+        const int err = errno;
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
     return Result<void>::success();
 }
@@ -690,8 +711,8 @@ hardware::Result<void, Error> Port::discard_input() noexcept {
 hardware::Result<void, Error> Port::discard_output() noexcept {
     if (!is_open()) return Result<void>::failure(Error::NotOpen);
     if (tty::discard(fd_, TCOFLUSH) < 0) {
-        const int native_error = errno;
-        return Result<void>::failure(map_runtime_error(native_error));
+        const int err = errno;
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
     return Result<void>::success();
 }
@@ -699,8 +720,8 @@ hardware::Result<void, Error> Port::discard_output() noexcept {
 hardware::Result<void, Error> Port::discard_buffers() noexcept {
     if (!is_open()) return Result<void>::failure(Error::NotOpen);
     if (tty::discard(fd_, TCIOFLUSH) < 0) {
-        const int native_error = errno;
-        return Result<void>::failure(map_runtime_error(native_error));
+        const int err = errno;
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
     return Result<void>::success();
 }
@@ -710,9 +731,9 @@ hardware::Result<void, Error> Port::drain() noexcept {
 
     for (;;) {
         if (tty::drain(fd_) == 0) return Result<void>::success();
-        const int native_error = errno;
-        if (native_error == EINTR) continue;
-        return Result<void>::failure(map_runtime_error(native_error));
+        const int err = errno;
+        if (err == EINTR) continue;
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
 }
 
@@ -721,52 +742,40 @@ hardware::Result<void, Error> Port::set_rts(bool asserted) noexcept {
     if (rts_automatic_) return Result<void>::failure(Error::InvalidState);
 
     if (tty::write_modem_line(fd_, TIOCM_RTS, asserted) < 0) {
-        const int native_error = errno;
-        return Result<void>::failure(map_runtime_error(native_error));
+        const int err = errno;
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
     return Result<void>::success();
 }
 
-hardware::Result<bool, Error> Port::rts() const noexcept {
-    return read_modem_line(fd_, TIOCM_RTS);
-}
+hardware::Result<bool, Error> Port::rts() const noexcept { return read_modem_line(fd_, TIOCM_RTS); }
 
 hardware::Result<void, Error> Port::set_dtr(bool asserted) noexcept {
     if (!is_open()) return Result<void>::failure(Error::NotOpen);
 
     if (tty::write_modem_line(fd_, TIOCM_DTR, asserted) < 0) {
-        const int native_error = errno;
-        return Result<void>::failure(map_runtime_error(native_error));
+        const int err = errno;
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
     return Result<void>::success();
 }
 
-hardware::Result<bool, Error> Port::dtr() const noexcept {
-    return read_modem_line(fd_, TIOCM_DTR);
-}
+hardware::Result<bool, Error> Port::dtr() const noexcept { return read_modem_line(fd_, TIOCM_DTR); }
 
-hardware::Result<bool, Error> Port::cts() const noexcept {
-    return read_modem_line(fd_, TIOCM_CTS);
-}
+hardware::Result<bool, Error> Port::cts() const noexcept { return read_modem_line(fd_, TIOCM_CTS); }
 
-hardware::Result<bool, Error> Port::dsr() const noexcept {
-    return read_modem_line(fd_, TIOCM_DSR);
-}
+hardware::Result<bool, Error> Port::dsr() const noexcept { return read_modem_line(fd_, TIOCM_DSR); }
 
-hardware::Result<bool, Error> Port::ri() const noexcept {
-    return read_modem_line(fd_, TIOCM_RI);
-}
+hardware::Result<bool, Error> Port::ri() const noexcept { return read_modem_line(fd_, TIOCM_RI); }
 
-hardware::Result<bool, Error> Port::dcd() const noexcept {
-    return read_modem_line(fd_, TIOCM_CAR);
-}
+hardware::Result<bool, Error> Port::dcd() const noexcept { return read_modem_line(fd_, TIOCM_CAR); }
 
 hardware::Result<void, Error> Port::set_break(bool asserted) noexcept {
     if (!is_open()) return Result<void>::failure(Error::NotOpen);
 
     if (tty::write_break(fd_, asserted) < 0) {
-        const int native_error = errno;
-        return Result<void>::failure(map_runtime_error(native_error));
+        const int err = errno;
+        return Result<void>::failure(to_error(err, ErrorContext::Runtime));
     }
     return Result<void>::success();
 }

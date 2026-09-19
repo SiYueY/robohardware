@@ -19,7 +19,9 @@ validation. Tests replace `tty.cpp` with `tests/serial/tty_fake.cpp`, matching t
 `Port` keeps its descriptor non-blocking so waiting is controlled explicitly with `ppoll` and
 `CLOCK_MONOTONIC`. A bounded operation creates one absolute deadline; EINTR, EAGAIN, and
 readiness races reuse the remaining time. A positive `read(2)` or `write(2)` result is returned
-immediately, including partial transfers.
+immediately, including partial transfers. One ready-but-no-progress race is tolerated; a second
+such result returns `Io`. A zero timeout consumes one zero-duration readiness probe for the whole
+operation.
 
 `open()` owns a temporary descriptor until TTY status, exclusive ownership, termios configuration,
 optional RS-485 configuration, and readback validation have succeeded. It requests `TIOCEXCL`

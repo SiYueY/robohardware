@@ -45,10 +45,11 @@ native `close` 提交后使用 committed-state semantics；SPI transfer 和 CAN 
 
 ## Transport conventions
 
-Serial read/write 是一次 low-level transfer attempt：等待 readiness 后只进行一次实际
-`read(2)` 或 `write(2)`。正 transfer result 立即成为 `Success(n)`；没有 progress 的
-terminal failure 才成为 `Failure(Error)`。write 的 `n` 是 kernel/TTY driver accepted bytes，
-不是 physical transmission completion；后者由 `drain()` 明确表达。
+Serial read/write 是一次 low-level transfer attempt：获得 readiness 后尝试 native transfer。
+第一次 positive transfer 立即成为 `Success(n)`，包括 partial transfer；实现允许一次有限的
+readiness-race retry，但不会为填满请求 buffer 执行 loop-until-complete。连续第二次
+ready-but-no-progress 返回 `Io`。write 的 `n` 是 kernel/TTY driver accepted bytes，不是
+physical transmission completion；后者由 `drain()` 明确表达。
 
 CAN `ReceivedFrame` 是成功接收的 tagged value，区分 Classical、FD 与 ErrorFrame。ErrorFrame
 是 bus diagnostic event，不是 `can::Error`；后者仅表示 transport operation failure。

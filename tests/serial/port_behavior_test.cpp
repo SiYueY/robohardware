@@ -6,6 +6,8 @@
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <poll.h>
 #include <utility>
 #include <vector>
@@ -64,6 +66,38 @@ int main() {
     {
         serial::tty::fake::reset();
         serial::Config config{115200};
+        config.data_bits = static_cast<serial::DataBits>(0);
+        serial::Port port;
+        auto result = port.open("/dev/ttyS0", config);
+        assert(!result && result.error() == serial::Error::InvalidArgument);
+        assert(serial::tty::fake::calls().empty());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Config config{115200};
+        config.rs485.delay_before_send = -1ms;
+        serial::Port port;
+        auto result = port.open("/dev/ttyS0", config);
+        assert(!result && result.error() == serial::Error::InvalidArgument);
+        assert(serial::tty::fake::calls().empty());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Config config{115200};
+        config.rs485.delay_after_send = std::chrono::milliseconds{
+            static_cast<std::chrono::milliseconds::rep>(std::numeric_limits<std::uint32_t>::max()) +
+            1};
+        serial::Port port;
+        auto result = port.open("/dev/ttyS0", config);
+        assert(!result && result.error() == serial::Error::InvalidArgument);
+        assert(serial::tty::fake::calls().empty());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Config config{115200};
         config.flow_control = serial::FlowControl::RtsCts;
         config.rs485.enabled = true;
         serial::Port port;
@@ -80,10 +114,35 @@ int main() {
 
     {
         serial::tty::fake::reset();
+        serial::tty::fake::fail(Operation::Open, 1, ENOENT);
+        expect_failed_open(serial::Error::DeviceNotFound);
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::tty::fake::fail(Operation::Open, 1, ENOMEM);
+        expect_failed_open(serial::Error::OutOfMemory);
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::tty::fake::fail(Operation::Open, 1, EIO);
+        expect_failed_open(serial::Error::Io);
+    }
+
+    {
+        serial::tty::fake::reset();
         serial::tty::fake::fail(Operation::SetExclusive, 1, EBUSY);
         expect_failed_open(serial::Error::Busy);
         assert(count(Operation::Close) == 1);
         assert(count(Operation::ClearExclusive) == 0);
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::tty::fake::fail(Operation::SetExclusive, 1, EACCES);
+        expect_failed_open(serial::Error::PermissionDenied);
+        assert(count(Operation::Close) == 1);
     }
 
     {
@@ -146,6 +205,29 @@ int main() {
         std::byte buffer[8]{};
         auto result = port.try_read(buffer, sizeof(buffer));
         assert(!result && result.error() == serial::Error::WouldBlock);
+        assert(port.close());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+
+        serial::tty::fake::fail(Operation::Read, 1, ENODEV);
+        std::byte buffer[8]{};
+        auto result = port.try_read(buffer, sizeof(buffer));
+        assert(!result && result.error() == serial::Error::Disconnected);
+        assert(port.close());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+
+        serial::tty::fake::fail(Operation::InputQueueSize, 1, ENOTTY);
+        auto result = port.bytes_available();
+        assert(!result && result.error() == serial::Error::Unsupported);
         assert(port.close());
     }
 
@@ -376,8 +458,7 @@ int main() {
         serial::Port port;
         assert(port.open("/dev/ttyS0", kConfig));
 
-        serial::tty::fake::set_monotonic_times(
-            {{0, 0}, {0, 0}, {0, 40'000'000}});
+        serial::tty::fake::set_monotonic_times({{0, 0}, {0, 0}, {0, 40'000'000}});
         serial::tty::fake::set_wait_result(0);
         serial::tty::fake::fail(Operation::Wait, 1, EINTR);
         auto result = port.wait_readable(100ms);

@@ -28,9 +28,9 @@ namespace serial::tty {
 [[nodiscard]] ssize_t read(int fd, void* data, std::size_t size) noexcept;
 [[nodiscard]] ssize_t write(int fd, const void* data, std::size_t size) noexcept;
 
+[[nodiscard]] int input_queue_size(int fd, int& size) noexcept;
+[[nodiscard]] int output_queue_size(int fd, int& size) noexcept;
 [[nodiscard]] int discard(int fd, int selector) noexcept;
-[[nodiscard]] int read_input_queue_size(int fd, int& size) noexcept;
-[[nodiscard]] int read_output_queue_size(int fd, int& size) noexcept;
 [[nodiscard]] int drain(int fd) noexcept;
 
 [[nodiscard]] int read_modem_lines(int fd, int& lines) noexcept;

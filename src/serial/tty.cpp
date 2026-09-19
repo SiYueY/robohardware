@@ -51,11 +51,11 @@ ssize_t write(int fd, const void* data, std::size_t size) noexcept {
     return ::write(fd, data, size);
 }
 
+int input_queue_size(int fd, int& size) noexcept { return ::ioctl(fd, FIONREAD, &size); }
+
+int output_queue_size(int fd, int& size) noexcept { return ::ioctl(fd, TIOCOUTQ, &size); }
+
 int discard(int fd, int selector) noexcept { return ::tcflush(fd, selector); }
-
-int read_input_queue_size(int fd, int& size) noexcept { return ::ioctl(fd, FIONREAD, &size); }
-
-int read_output_queue_size(int fd, int& size) noexcept { return ::ioctl(fd, TIOCOUTQ, &size); }
 
 int drain(int fd) noexcept { return ::tcdrain(fd); }
 

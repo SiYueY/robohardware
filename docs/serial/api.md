@@ -35,3 +35,22 @@ allocate, create threads, lock, retry until a requested buffer is complete, nor 
 not thread-safe; callers synchronize shared access. `list_ports()` is a non-real-time discovery
 operation and may allocate; no ports is a successful empty vector and missing per-device metadata
 is non-fatal.
+
+## Real-time classification
+
+These classifications describe the API's own behavior. Kernel driver behavior and the selected
+TTY device can still affect latency.
+
+| API | Classification |
+| --- | --- |
+| `open` | Setup-only |
+| `close` | Setup/control |
+| Blocking `read` / `write` | Non-real-time |
+| Timed `read` / `write` | Bounded blocking; platform-dependent |
+| `try_read` / `try_write` | Real-time candidate |
+| `wait_readable` / `wait_writable` | Bounded blocking |
+| `bytes_available` / `bytes_pending` | Real-time candidate; ioctl latency is platform-dependent |
+| `discard_*` / `set_break` | Control |
+| `drain` | Non-real-time |
+| Modem-line getters and RTS/DTR setters | Real-time candidate; ioctl latency is platform-dependent |
+| `list_ports` | Non-real-time |

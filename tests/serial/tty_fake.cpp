@@ -68,9 +68,7 @@ State state;
 
 }  // namespace
 
-int open(const char*) noexcept {
-    return begin(Operation::Open) ? 42 : -1;
-}
+int open(const char*) noexcept { return begin(Operation::Open) ? 42 : -1; }
 
 int close(int) noexcept { return begin(Operation::Close) ? 0 : -1; }
 
@@ -121,8 +119,7 @@ int monotonic_now(timespec& value) noexcept {
         value = {};
         return 0;
     }
-    const std::size_t position =
-        std::min(state.monotonic_index, state.monotonic_times.size() - 1);
+    const std::size_t position = std::min(state.monotonic_index, state.monotonic_times.size() - 1);
     value = state.monotonic_times[position];
     if (state.monotonic_index < state.monotonic_times.size()) ++state.monotonic_index;
     return 0;
@@ -175,19 +172,19 @@ ssize_t write(int, const void*, std::size_t size) noexcept {
     return std::min<ssize_t>(transfer.result, static_cast<ssize_t>(size));
 }
 
-int discard(int, int) noexcept { return begin(Operation::Discard) ? 0 : -1; }
-
-int read_input_queue_size(int, int& size) noexcept {
-    if (!begin(Operation::ReadInputQueueSize)) return -1;
+int input_queue_size(int, int& size) noexcept {
+    if (!begin(Operation::InputQueueSize)) return -1;
     size = state.input_queue_size;
     return 0;
 }
 
-int read_output_queue_size(int, int& size) noexcept {
-    if (!begin(Operation::ReadOutputQueueSize)) return -1;
+int output_queue_size(int, int& size) noexcept {
+    if (!begin(Operation::OutputQueueSize)) return -1;
     size = state.output_queue_size;
     return 0;
 }
+
+int discard(int, int) noexcept { return begin(Operation::Discard) ? 0 : -1; }
 
 int drain(int) noexcept { return begin(Operation::Drain) ? 0 : -1; }
 
