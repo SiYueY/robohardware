@@ -13,6 +13,8 @@ namespace serial::tty {
 [[nodiscard]] int open(const char* path) noexcept;
 [[nodiscard]] int close(int fd) noexcept;
 [[nodiscard]] int is_terminal(int fd) noexcept;
+[[nodiscard]] int set_exclusive(int fd) noexcept;
+[[nodiscard]] int clear_exclusive(int fd) noexcept;
 
 [[nodiscard]] int read_attributes(int fd, termios& attributes) noexcept;
 [[nodiscard]] int write_attributes(int fd, int action, const termios& attributes) noexcept;

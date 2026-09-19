@@ -19,8 +19,9 @@ public:
     Port(Port&& other) noexcept;
     Port& operator=(Port&& other) = delete;
 
-    // Opens and atomically configures a Linux TTY. Configuration is read back
-    // before ownership is committed; failure leaves the Port closed.
+    // Opens and transactionally configures a Linux TTY. Configuration is read
+    // back before ownership is committed; failed configuration is rolled back
+    // on a best-effort basis and leaves the Port closed.
     [[nodiscard]] hardware::Result<void, Error> open(
         const std::string& path, const Config& config) noexcept;
 
@@ -37,7 +38,8 @@ public:
         const std::byte* data, std::size_t size) noexcept;
 
     // Bounded transfers use one CLOCK_MONOTONIC deadline for the whole
-    // operation. EINTR and readiness races do not restart the timeout.
+    // operation. A zero timeout performs one immediate readiness check. EINTR
+    // and readiness races do not restart the timeout.
     [[nodiscard]] hardware::Result<std::size_t, Error> read(
         std::byte* data, std::size_t size, std::chrono::nanoseconds timeout) noexcept;
     [[nodiscard]] hardware::Result<std::size_t, Error> write(
@@ -84,6 +86,7 @@ public:
 private:
     int fd_{-1};
     bool rts_automatic_{false};
+    bool exclusive_{false};
 };
 
 }  // namespace serial

@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 #include <new>
+#include <stdexcept>
 #include <string_view>
 #include <system_error>
 
@@ -93,6 +94,8 @@ hardware::Result<std::vector<PortInfo>, Error> list_ports() noexcept {
         });
         return hardware::Result<std::vector<PortInfo>, Error>::success(std::move(ports));
     } catch (const std::bad_alloc&) {
+        return hardware::Result<std::vector<PortInfo>, Error>::failure(Error::OutOfMemory);
+    } catch (const std::length_error&) {
         return hardware::Result<std::vector<PortInfo>, Error>::failure(Error::OutOfMemory);
     } catch (const fs::filesystem_error&) {
         return hardware::Result<std::vector<PortInfo>, Error>::failure(Error::Io);

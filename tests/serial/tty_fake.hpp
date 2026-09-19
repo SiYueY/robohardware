@@ -12,6 +12,8 @@ enum class Operation : std::size_t {
     Open,
     Close,
     IsTerminal,
+    SetExclusive,
+    ClearExclusive,
     ReadAttributes,
     WriteAttributes,
     ReadRs485,
@@ -30,13 +32,20 @@ enum class Operation : std::size_t {
     Count,
 };
 
+struct WaitResult final {
+    int result;
+    short revents{0};
+};
+
 void reset() noexcept;
 void fail(Operation operation, std::size_t occurrence, int native_error) noexcept;
 void ignore_write(Operation operation) noexcept;
 void set_terminal(bool terminal) noexcept;
 void set_rs485_supported(bool supported) noexcept;
 void set_wait_result(int result, short revents = 0) noexcept;
+void set_wait_results(std::vector<WaitResult> values);
 void set_read_result(ssize_t result) noexcept;
+void set_read_results(std::vector<ssize_t> values);
 void set_write_result(ssize_t result) noexcept;
 void set_monotonic_times(std::vector<timespec> values);
 void set_input_queue_size(int value) noexcept;

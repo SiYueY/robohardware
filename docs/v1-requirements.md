@@ -179,6 +179,7 @@ V1 必须支持：
 - 显式关闭和 RAII 清理；
 - move-only ownership；
 - 波特率、数据位、停止位、校验和流控配置；
+- 对已打开 TTY 请求内核排他使用；
 - 清晰报告无效配置、权限错误、设备不存在和 driver 不支持。
 
 ### 5.3 通信
@@ -189,13 +190,16 @@ V1 必须支持：
 - immediate/non-blocking attempt；
 - 带整体 deadline 的 read/write；
 - 部分读取和部分写入；
-- 同时表达已传输字节数和停止原因；
 - flush；
 - drain/send-complete；
 - 设备断开及系统调用失败的明确错误。
 
 `write` 被内核接受不得被描述为物理发送完成。物理发送完成语义必须通过
 独立且明确的 drain/send-complete 操作表达。
+
+一次 read/write 调用在首次有效 kernel progress 后立即以 `Result<size_t, Error>` 成功返回，
+包括 partial transfer；在有效 progress 前失败则返回 `Error`。V1 不提供同时携带 progress
+与终止原因的复合结果类型。
 
 ### 5.4 RS-485
 
@@ -224,7 +228,7 @@ V1 不提供：
 - Modbus RTU 或私有设备协议；
 - 数据帧解析、编解码器或消息路由；
 - 自动重试和自动重连；
-- 设备发现、枚举和热插拔监控；
+- 热插拔监控、udev watcher、后台扫描或自动设备重连；
 - 后台 I/O 线程；
 - callback、future 或 coroutine API；
 - 跨平台串口；
@@ -361,17 +365,17 @@ Realtime 并发原语还必须进行 wrap-around、满/空竞争、长时间压�
 
 #### Serial
 
-必须提供通过 PTY 与生产 Serial 实现通信的模拟固件，覆盖：
+必须提供通过 PTY 与生产 Serial 实现通信的 transport 行为测试，覆盖：
 
 - 正常数据收发；
-- 分包和粘包对上层测试协议的影响；
-- 部分传输；
+- 分包和 burst 输入；
+- partial transfer 的确定性 syscall 行为；
 - 超时；
 - 设备断开；
-- 异常响应；
 - 不支持的配置和错误路径。
 
-模拟固件可以使用测试协议构造设备行为，但该协议不得进入 Serial 生产 API。
+Serial 不拥有设备协议，因此不要求协议级异常响应；该类覆盖属于上层设备驱动测试。
+V1 提供一次性静态设备枚举 `list_ports()`，但不提供监控、后台扫描或自动重连。
 
 #### CAN
 

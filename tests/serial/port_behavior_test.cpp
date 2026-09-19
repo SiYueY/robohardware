@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <poll.h>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -53,8 +54,27 @@ int main() {
 
     {
         serial::tty::fake::reset();
+        serial::Config config{115200};
+        config.flow_control = serial::FlowControl::RtsCts;
+        config.rs485.enabled = true;
+        serial::Port port;
+        auto result = port.open("/dev/ttyS0", config);
+        assert(!result && result.error() == serial::Error::InvalidArgument);
+        assert(serial::tty::fake::calls().empty());
+    }
+
+    {
+        serial::tty::fake::reset();
         serial::tty::fake::fail(Operation::Open, 1, EBUSY);
         expect_failed_open(serial::Error::Busy);
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::tty::fake::fail(Operation::SetExclusive, 1, EBUSY);
+        expect_failed_open(serial::Error::Busy);
+        assert(count(Operation::Close) == 1);
+        assert(count(Operation::ClearExclusive) == 0);
     }
 
     {
@@ -82,6 +102,7 @@ int main() {
         serial::tty::fake::fail(Operation::WriteAttributes, 1, EIO);
         expect_failed_open(serial::Error::Disconnected);
         assert(count(Operation::WriteAttributes) == 2);
+        assert(count(Operation::ClearExclusive) == 1);
         assert(count(Operation::Close) == 1);
     }
 
@@ -116,6 +137,103 @@ int main() {
         std::byte buffer[8]{};
         auto result = port.try_read(buffer, sizeof(buffer));
         assert(!result && result.error() == serial::Error::WouldBlock);
+        assert(port.close());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port source;
+        assert(source.open("/dev/ttyS0", kConfig));
+        serial::Port destination(std::move(source));
+        assert(!source.is_open());
+        assert(destination.is_open());
+        assert(destination.close());
+        assert(count(Operation::ClearExclusive) == 1);
+        assert(count(Operation::Close) == 1);
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+
+        serial::tty::fake::set_wait_result(1, POLLIN);
+        std::byte buffer[8]{};
+        auto result = port.read(buffer, sizeof(buffer), 0ns);
+        assert(result && result.value() == 1);
+        const auto& timeouts = serial::tty::fake::wait_timeouts();
+        assert(timeouts.size() == 1);
+        assert(timeouts[0].tv_sec == 0 && timeouts[0].tv_nsec == 0);
+        assert(port.close());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+
+        serial::tty::fake::set_wait_result(0);
+        auto result = port.wait_readable(0ns);
+        assert(!result && result.error() == serial::Error::TimedOut);
+        const auto& timeouts = serial::tty::fake::wait_timeouts();
+        assert(timeouts.size() == 1);
+        assert(timeouts[0].tv_sec == 0 && timeouts[0].tv_nsec == 0);
+        assert(port.close());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+
+        auto result = port.wait_writable(0ns);
+        assert(result);
+        const auto& timeouts = serial::tty::fake::wait_timeouts();
+        assert(timeouts.size() == 1);
+        assert(timeouts[0].tv_sec == 0 && timeouts[0].tv_nsec == 0);
+        assert(port.close());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+
+        serial::tty::fake::set_wait_results({{1, POLLIN}, {0, 0}});
+        serial::tty::fake::set_read_results({0});
+        std::byte buffer[8]{};
+        auto result = port.read(buffer, sizeof(buffer), 10ms);
+        assert(!result && result.error() == serial::Error::TimedOut);
+        assert(count(Operation::Read) == 1);
+        assert(count(Operation::Wait) == 2);
+        assert(port.close());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+
+        serial::tty::fake::set_wait_results({{1, POLLIN}, {1, POLLIN}});
+        serial::tty::fake::set_read_results({0, 0});
+        std::byte buffer[8]{};
+        auto result = port.read(buffer, sizeof(buffer));
+        assert(!result && result.error() == serial::Error::Io);
+        assert(count(Operation::Read) == 2);
+        assert(count(Operation::Wait) == 2);
+        assert(port.close());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+
+        serial::tty::fake::set_write_result(2);
+        const std::byte buffer[8]{};
+        auto result = port.write(buffer, sizeof(buffer));
+        assert(result && result.value() == 2);
+        assert(count(Operation::Write) == 1);
         assert(port.close());
     }
 
@@ -173,6 +291,17 @@ int main() {
         assert(port.close());
     }
 
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+
+        serial::tty::fake::set_wait_result(1, POLLIN | POLLHUP);
+        auto result = port.wait_readable(100ms);
+        assert(result);
+        assert(port.close());
+    }
+
 #ifdef CRTSCTS
     {
         serial::tty::fake::reset();
@@ -194,6 +323,18 @@ int main() {
         serial::tty::fake::fail(Operation::Close, 1, EIO);
         auto result = port.close();
         assert(!result && result.error() == serial::Error::Disconnected);
+        assert(count(Operation::ClearExclusive) == 1);
+        assert(!port.is_open());
+    }
+
+    {
+        serial::tty::fake::reset();
+        serial::Port port;
+        assert(port.open("/dev/ttyS0", kConfig));
+        serial::tty::fake::fail(Operation::ClearExclusive, 1, EIO);
+        auto result = port.close();
+        assert(!result && result.error() == serial::Error::Disconnected);
+        assert(count(Operation::Close) == 1);
         assert(!port.is_open());
     }
 }

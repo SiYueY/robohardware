@@ -24,6 +24,10 @@ struct State final {
     std::vector<timespec> monotonic_times;
     std::size_t monotonic_index{0};
     std::vector<timespec> wait_timeouts;
+    std::vector<fake::WaitResult> wait_results;
+    std::size_t wait_result_index{0};
+    std::vector<ssize_t> read_results;
+    std::size_t read_result_index{0};
 
     bool terminal{true};
     bool rs485_supported{false};
@@ -73,6 +77,10 @@ int is_terminal(int) noexcept {
     return state.terminal ? 1 : 0;
 }
 
+int set_exclusive(int) noexcept { return begin(Operation::SetExclusive) ? 0 : -1; }
+
+int clear_exclusive(int) noexcept { return begin(Operation::ClearExclusive) ? 0 : -1; }
+
 int read_attributes(int, termios& attributes) noexcept {
     if (!begin(Operation::ReadAttributes)) return -1;
     attributes = state.attributes;
@@ -121,14 +129,29 @@ int monotonic_now(timespec& value) noexcept {
 int wait(int, short events, const timespec* timeout, short& revents) noexcept {
     if (timeout != nullptr) state.wait_timeouts.push_back(*timeout);
     if (!begin(Operation::Wait)) return -1;
+    if (!state.wait_results.empty()) {
+        const std::size_t position =
+            std::min(state.wait_result_index, state.wait_results.size() - 1);
+        const fake::WaitResult result = state.wait_results[position];
+        if (state.wait_result_index < state.wait_results.size()) ++state.wait_result_index;
+        revents = result.revents != 0 ? result.revents : events;
+        return result.result;
+    }
     revents = state.wait_revents != 0 ? state.wait_revents : events;
     return state.wait_result;
 }
 
 ssize_t read(int, void*, std::size_t size) noexcept {
     if (!begin(Operation::Read)) return -1;
-    if (state.read_result < 0) return state.read_result;
-    return std::min<ssize_t>(state.read_result, static_cast<ssize_t>(size));
+    ssize_t result = state.read_result;
+    if (!state.read_results.empty()) {
+        const std::size_t position =
+            std::min(state.read_result_index, state.read_results.size() - 1);
+        result = state.read_results[position];
+        if (state.read_result_index < state.read_results.size()) ++state.read_result_index;
+    }
+    if (result < 0) return result;
+    return std::min<ssize_t>(result, static_cast<ssize_t>(size));
 }
 
 ssize_t write(int, const void*, std::size_t size) noexcept {
@@ -190,7 +213,17 @@ void set_wait_result(int result, short revents) noexcept {
     state.wait_revents = revents;
 }
 
+void set_wait_results(std::vector<WaitResult> values) {
+    state.wait_results = std::move(values);
+    state.wait_result_index = 0;
+}
+
 void set_read_result(ssize_t result) noexcept { state.read_result = result; }
+
+void set_read_results(std::vector<ssize_t> values) {
+    state.read_results = std::move(values);
+    state.read_result_index = 0;
+}
 
 void set_write_result(ssize_t result) noexcept { state.write_result = result; }
 

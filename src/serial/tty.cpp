@@ -15,6 +15,10 @@ int close(int fd) noexcept { return ::close(fd); }
 
 int is_terminal(int fd) noexcept { return ::isatty(fd); }
 
+int set_exclusive(int fd) noexcept { return ::ioctl(fd, TIOCEXCL); }
+
+int clear_exclusive(int fd) noexcept { return ::ioctl(fd, TIOCNXCL); }
+
 int read_attributes(int fd, termios& attributes) noexcept { return ::tcgetattr(fd, &attributes); }
 
 int write_attributes(int fd, int action, const termios& attributes) noexcept {
