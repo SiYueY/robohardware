@@ -17,7 +17,7 @@ namespace hardware {
  *
  * A Result is always in exactly one of two states:
  *
- *   - Value: contains an object of type T.
+ *   - Success: contains an object of type T.
  *   - Error: contains an object of type E.
  *
  * T and E are stored directly inside the Result object. Result itself performs
@@ -25,8 +25,8 @@ namespace hardware {
  * State inspection and value/error access are constant-time operations.
  *
  * Result intentionally makes no assumptions about the meaning of E. The error
- * type may be a Linux errno wrapper, a device-specific enum, a protocol error,
- * or any other application-defined type.
+ * type has no semantic requirements beyond this class's compile-time type
+ * constraints. Module APIs define their own error types and meanings.
  *
  * @par Real-time usage
  *
@@ -41,9 +41,8 @@ namespace hardware {
  * Typical RT-friendly instantiations include:
  *
  * @code
- * Result<std::size_t, serial::Error>
- * Result<can::Frame, can::Error>
- * Result<void, spi::Error>
+ * Result<std::size_t, ModuleError>
+ * Result<void, ModuleError>
  * @endcode
  *
  * @par Usage
@@ -65,7 +64,7 @@ namespace hardware {
  * Inspect a result:
  *
  * @code
- * const auto result = port.read_some(buffer);
+ * const auto result = read_device();
  *
  * if (!result) {
  *     handle_error(result.error());
@@ -107,22 +106,26 @@ public:
     /**
      * @brief Creates a successful result by copying a value.
      */
-    template <typename U = T, std::enable_if_t<std::is_nothrow_copy_constructible_v<U>, int> = 0>
+    template <
+        typename U = T,
+        std::enable_if_t<std::is_same_v<U, T> && std::is_nothrow_copy_constructible_v<T>, int> = 0>
     [[nodiscard]] static Result success(const T& value) noexcept {
-        return Result(ValueTag{}, value);
+        return Result(SuccessTag{}, value);
     }
 
     /**
      * @brief Creates a successful result by moving a value.
      */
     [[nodiscard]] static Result success(T&& value) noexcept {
-        return Result(ValueTag{}, std::move(value));
+        return Result(SuccessTag{}, std::move(value));
     }
 
     /**
      * @brief Creates a failed result by copying an error.
      */
-    template <typename G = E, std::enable_if_t<std::is_nothrow_copy_constructible_v<G>, int> = 0>
+    template <
+        typename U = E,
+        std::enable_if_t<std::is_same_v<U, E> && std::is_nothrow_copy_constructible_v<E>, int> = 0>
     [[nodiscard]] static Result failure(const E& error) noexcept {
         return Result(ErrorTag{}, error);
     }
@@ -135,7 +138,7 @@ public:
     }
 
     /**
-     * @brief Copy-constructs the currently active value or error.
+     * @brief Copy construction is intentionally unsupported.
      */
     Result(const Result&) = delete;
 
@@ -147,9 +150,9 @@ public:
      */
     Result(Result&& other) noexcept : state_(other.state_) {
         if (other.has_value()) {
-            construct_value(std::move(other).value_unchecked());
+            construct_value(std::move(other.value_unchecked()));
         } else {
-            construct_error(std::move(other).error_unchecked());
+            construct_error(std::move(other.error_unchecked()));
         }
     }
 
@@ -172,7 +175,7 @@ public:
     /**
      * @brief Returns true if this Result contains a successful value.
      */
-    [[nodiscard]] constexpr bool has_value() const noexcept { return state_ == State::Value; }
+    [[nodiscard]] constexpr bool has_value() const noexcept { return state_ == State::Success; }
 
     /**
      * @brief Equivalent to has_value().
@@ -250,11 +253,11 @@ public:
 private:
     // Tags make the private value/error constructors unambiguous even when
     // T and E are identical or implicitly convertible to one another.
-    struct ValueTag final {};
+    struct SuccessTag final {};
     struct ErrorTag final {};
 
     enum class State : std::uint8_t {
-        Value,
+        Success,
         Error,
     };
 
@@ -266,23 +269,23 @@ private:
      * active member.
      */
     union Storage {
-        unsigned char empty;
+        unsigned char dummy;
         T value;
         E error;
 
-        constexpr Storage() noexcept : empty{0} {}
+        constexpr Storage() noexcept : dummy{0} {}
 
         // The active member is destroyed explicitly by Result.
         ~Storage() noexcept {}
     };
 
-    Result(ValueTag, const T& value) noexcept(std::is_nothrow_copy_constructible_v<T>)
-    : state_(State::Value) {
+    Result(SuccessTag, const T& value) noexcept(std::is_nothrow_copy_constructible_v<T>)
+    : state_(State::Success) {
         construct_value(value);
     }
 
-    Result(ValueTag, T&& value) noexcept(std::is_nothrow_move_constructible_v<T>)
-    : state_(State::Value) {
+    Result(SuccessTag, T&& value) noexcept(std::is_nothrow_move_constructible_v<T>)
+    : state_(State::Success) {
         construct_value(std::move(value));
     }
 
@@ -303,9 +306,9 @@ private:
         ::new (static_cast<void*>(&storage_.value)) T(std::forward<U>(value));
     }
 
-    template <typename G>
-    void construct_error(G&& error) noexcept(std::is_nothrow_constructible_v<E, G&&>) {
-        ::new (static_cast<void*>(&storage_.error)) E(std::forward<G>(error));
+    template <typename U>
+    void construct_error(U&& error) noexcept(std::is_nothrow_constructible_v<E, U&&>) {
+        ::new (static_cast<void*>(&storage_.error)) E(std::forward<U>(error));
     }
 
     void destroy_active() noexcept {
@@ -343,13 +346,13 @@ private:
  * Typical usage:
  *
  * @code
- * using OpenResult = Result<void, serial::Error>;
+ * using OperationResult = Result<void, ModuleError>;
  *
- * if (fd < 0) {
- *     return OpenResult::failure(serial::Error::OpenFailed);
+ * if (operation_failed()) {
+ *     return OperationResult::failure(ModuleError::Failure);
  * }
  *
- * return OpenResult::success();
+ * return OperationResult::success();
  * @endcode
  *
  * The same real-time constraints as Result<T, E> apply.
@@ -373,12 +376,14 @@ public:
     /**
      * @brief Creates a successful result.
      */
-    [[nodiscard]] static Result success() noexcept { return Result(ValueTag{}); }
+    [[nodiscard]] static Result success() noexcept { return Result(SuccessTag{}); }
 
     /**
      * @brief Creates a failed result by copying an error.
      */
-    template <typename G = E, std::enable_if_t<std::is_nothrow_copy_constructible_v<G>, int> = 0>
+    template <
+        typename U = E,
+        std::enable_if_t<std::is_same_v<U, E> && std::is_nothrow_copy_constructible_v<E>, int> = 0>
     [[nodiscard]] static Result failure(const E& error) noexcept {
         return Result(ErrorTag{}, error);
     }
@@ -394,23 +399,19 @@ public:
 
     Result(Result&& other) noexcept : state_(other.state_) {
         if (!other.has_value()) {
-            construct_error(std::move(other).error_unchecked());
+            construct_error(std::move(other.error_unchecked()));
         }
     }
 
     Result& operator=(const Result&) = delete;
     Result& operator=(Result&&) = delete;
 
-    ~Result() noexcept {
-        if (!has_value()) {
-            error_unchecked().~E();
-        }
-    }
+    ~Result() noexcept { destroy_active(); }
 
     /**
      * @brief Returns true if the operation completed successfully.
      */
-    [[nodiscard]] constexpr bool has_value() const noexcept { return state_ == State::Value; }
+    [[nodiscard]] constexpr bool has_value() const noexcept { return state_ == State::Success; }
 
     /**
      * @brief Equivalent to has_value().
@@ -446,24 +447,24 @@ public:
     }
 
 private:
-    struct ValueTag final {};
+    struct SuccessTag final {};
     struct ErrorTag final {};
 
     enum class State : std::uint8_t {
-        Value,
+        Success,
         Error,
     };
 
     union Storage {
-        unsigned char empty;
+        unsigned char dummy;
         E error;
 
-        constexpr Storage() noexcept : empty{0} {}
+        constexpr Storage() noexcept : dummy{0} {}
 
         ~Storage() noexcept {}
     };
 
-    explicit Result(ValueTag) noexcept : state_(State::Value) {}
+    explicit Result(SuccessTag) noexcept : state_(State::Success) {}
 
     Result(ErrorTag, const E& error) noexcept(std::is_nothrow_copy_constructible_v<E>)
     : state_(State::Error) {
@@ -475,9 +476,13 @@ private:
         construct_error(std::move(error));
     }
 
-    template <typename G>
-    void construct_error(G&& error) noexcept(std::is_nothrow_constructible_v<E, G&&>) {
-        ::new (static_cast<void*>(&storage_.error)) E(std::forward<G>(error));
+    template <typename U>
+    void construct_error(U&& error) noexcept(std::is_nothrow_constructible_v<E, U&&>) {
+        ::new (static_cast<void*>(&storage_.error)) E(std::forward<U>(error));
+    }
+
+    void destroy_active() noexcept {
+        if (!has_value()) error_unchecked().~E();
     }
 
     [[nodiscard]] E& error_unchecked() noexcept { return *std::launder(&storage_.error); }

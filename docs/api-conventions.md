@@ -27,7 +27,9 @@ Queue full/empty、Buffer 尚无 publication 与 `is_configured()` 都是 normal
 `hardware::Result<T, E>` 严格表示 value XOR error，使用 inline storage，不分配、不加锁、
 不执行 syscall、不记录日志且不隐藏 retry。它是 move-only；`T` 和 `E` 必须是 non-array
 object type，且 nothrow move constructible、nothrow destructible。copy factories 仅通过
-C++17 SFINAE 对 nothrow-copy 类型参与 overload resolution。
+C++17 SFINAE 对实际 `T` 或 `E` 为 nothrow-copy 类型时参与 overload resolution；调用方不能
+通过显式模板实参放宽这一约束。Result move 后 source 保持原有 success/error logical state，
+但 active payload 遵循其自身的 moved-from 语义。
 
 错误类型属于模块：`realtime::Error`、`serial::Error`、`spi::Error` 和 `can::Error`。
 它们是固定大小 `enum class`，不包含 success 值，也不保存 native errno、category 或 message。
