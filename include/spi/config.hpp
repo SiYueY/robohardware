@@ -9,7 +9,7 @@ enum class BitOrder : std::uint8_t { MsbFirst, LsbFirst };
 
 struct Config {
     Mode mode;
-    std::uint32_t max_speed;   // Unit: Hz.
+    std::uint32_t max_speed;  // Unit: Hz.
     std::uint8_t bits_per_word;
     BitOrder bit_order;
 };

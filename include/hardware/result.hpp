@@ -105,6 +105,11 @@ public:
 
     /**
      * @brief Creates a successful result by copying a value.
+     *
+     * This overload participates only when T is nothrow copy constructible.
+     *
+     * @param value Value to copy into the success state.
+     * @return A Result in the success state.
      */
     template <
         typename U = T,
@@ -115,6 +120,9 @@ public:
 
     /**
      * @brief Creates a successful result by moving a value.
+     *
+     * @param value Value to move into the success state.
+     * @return A Result in the success state.
      */
     [[nodiscard]] static Result success(T&& value) noexcept {
         return Result(SuccessTag{}, std::move(value));
@@ -122,6 +130,11 @@ public:
 
     /**
      * @brief Creates a failed result by copying an error.
+     *
+     * This overload participates only when E is nothrow copy constructible.
+     *
+     * @param error Error to copy into the error state.
+     * @return A Result in the error state.
      */
     template <
         typename U = E,
@@ -132,6 +145,9 @@ public:
 
     /**
      * @brief Creates a failed result by moving an error.
+     *
+     * @param error Error to move into the error state.
+     * @return A Result in the error state.
      */
     [[nodiscard]] static Result failure(E&& error) noexcept {
         return Result(ErrorTag{}, std::move(error));
@@ -147,6 +163,8 @@ public:
      *
      * The source Result remains in the same logical state but contains a
      * moved-from T or E, following the normal move semantics of that type.
+     *
+     * @param other Result from which to move the active payload.
      */
     Result(Result&& other) noexcept : state_(other.state_) {
         if (other.has_value()) {
@@ -174,6 +192,8 @@ public:
 
     /**
      * @brief Returns true if this Result contains a successful value.
+     *
+     * @return true when this Result is in the success state; otherwise false.
      */
     [[nodiscard]] constexpr bool has_value() const noexcept { return state_ == State::Success; }
 
@@ -198,6 +218,8 @@ public:
      * This function does not throw. A violated precondition is treated as a
      * programming error and is checked with assert() when assertions are
      * enabled.
+     *
+     * @return A reference to the successful value.
      */
     [[nodiscard]] T& value() & noexcept {
         assert(has_value());
@@ -216,6 +238,7 @@ public:
      * @brief Moves the contained value out of this Result.
      *
      * @pre has_value() == true.
+     * @return An rvalue reference to the successful value.
      */
     [[nodiscard]] T&& value() && noexcept {
         assert(has_value());
@@ -226,6 +249,7 @@ public:
      * @brief Returns the contained error.
      *
      * @pre has_value() == false.
+     * @return A reference to the error.
      */
     [[nodiscard]] E& error() & noexcept {
         assert(!has_value());
@@ -244,6 +268,7 @@ public:
      * @brief Moves the contained error out of this Result.
      *
      * @pre has_value() == false.
+     * @return An rvalue reference to the error.
      */
     [[nodiscard]] E&& error() && noexcept {
         assert(!has_value());
@@ -375,11 +400,18 @@ public:
 
     /**
      * @brief Creates a successful result.
+     *
+     * @return A Result in the success state.
      */
     [[nodiscard]] static Result success() noexcept { return Result(SuccessTag{}); }
 
     /**
      * @brief Creates a failed result by copying an error.
+     *
+     * This overload participates only when E is nothrow copy constructible.
+     *
+     * @param error Error to copy into the error state.
+     * @return A Result in the error state.
      */
     template <
         typename U = E,
@@ -390,26 +422,40 @@ public:
 
     /**
      * @brief Creates a failed result by moving an error.
+     *
+     * @param error Error to move into the error state.
+     * @return A Result in the error state.
      */
     [[nodiscard]] static Result failure(E&& error) noexcept {
         return Result(ErrorTag{}, std::move(error));
     }
 
+    /** @brief Copy construction is intentionally unsupported. */
     Result(const Result&) = delete;
 
+    /**
+     * @brief Moves the error payload while preserving the source logical state.
+     *
+     * @param other Result from which to move the active error.
+     */
     Result(Result&& other) noexcept : state_(other.state_) {
         if (!other.has_value()) {
             construct_error(std::move(other.error_unchecked()));
         }
     }
 
+    /** @brief Copy assignment is intentionally unsupported. */
     Result& operator=(const Result&) = delete;
+    /** @brief Move assignment is intentionally unsupported. */
     Result& operator=(Result&&) = delete;
 
+    /** @brief Destroys the active error, if any. */
     ~Result() noexcept { destroy_active(); }
 
     /**
      * @brief Returns true if the operation completed successfully.
+     *
+     * @return true when this Result is in the success state; otherwise false.
      */
     [[nodiscard]] constexpr bool has_value() const noexcept { return state_ == State::Success; }
 
@@ -422,6 +468,7 @@ public:
      * @brief Returns the contained error.
      *
      * @pre has_value() == false.
+     * @return A reference to the error.
      */
     [[nodiscard]] E& error() & noexcept {
         assert(!has_value());
@@ -440,6 +487,7 @@ public:
      * @brief Moves the contained error out of this Result.
      *
      * @pre has_value() == false.
+     * @return An rvalue reference to the error.
      */
     [[nodiscard]] E&& error() && noexcept {
         assert(!has_value());
